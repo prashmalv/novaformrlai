@@ -1,0 +1,22 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+dist/
+build/
+*.spec
+*.egg-info/
+.env
+*.pdf
+*.png
+tests/*.dxf
+
+# Client data — never commit private project files
+data/Client Samples/
+data/clients/
+*.dwg
+*.dxf
+*.bak
+~$*
+*.xlsx
