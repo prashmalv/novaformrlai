@@ -3,17 +3,20 @@ PDF Generator: produces Nova Formworks-style quotation PDF.
 """
 import os
 from datetime import date
+from pathlib import Path
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     SimpleDocTemplate, Table, TableStyle, Paragraph,
-    Spacer, HRFlowable
+    Spacer, HRFlowable, Image
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from src.models.element import ProjectBOQ, ElementBOQ
 from src.output.boq_generator import aggregate_project_boq
+
+_LOGO_PATH = Path(__file__).parent.parent.parent / "assets" / "images" / "NovaLogo.png"
 
 PAGE_W, PAGE_H = A4
 
@@ -51,21 +54,36 @@ def _styles():
 
 
 def _header_table(project: ProjectBOQ, st: dict):
-    """Company header block."""
+    """Company header block with logo."""
     company_info = [
         Paragraph("NOVA FORMWORKS PVT LTD", st['company']),
         Paragraph("A-7/121-124 South Side of GT Road Indl.Area Ghaziabad (UP)", st['tagline']),
         Paragraph("Email: info@novaformworks.com  |  Mob: +91-93 10 69 54 40", st['tagline']),
     ]
-    header = Table(
-        [[company_info]],
-        colWidths=[PAGE_W - 40 * mm]
-    )
+
+    total_w = PAGE_W - 40 * mm
+    if _LOGO_PATH.exists():
+        logo = Image(str(_LOGO_PATH), width=45 * mm, height=14 * mm)
+        logo.hAlign = 'LEFT'
+        rows = [[logo, company_info]]
+        col_w = [48 * mm, total_w - 48 * mm]
+        style_extra = [
+            ('ALIGN', (0, 0), (0, 0), 'CENTER'),
+            ('VALIGN', (0, 0), (0, 0), 'MIDDLE'),
+        ]
+    else:
+        rows = [[company_info]]
+        col_w = [total_w]
+        style_extra = []
+
+    header = Table(rows, colWidths=col_w)
     header.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), NOVA_BLUE),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        *style_extra,
     ]))
     return header
 

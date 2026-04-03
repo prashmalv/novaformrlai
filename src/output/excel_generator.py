@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime
 from collections import defaultdict
+from pathlib import Path
 from typing import Optional
 
 import openpyxl
@@ -14,6 +15,8 @@ from openpyxl.styles import (
 from openpyxl.utils import get_column_letter
 
 from src.models.element import ElementBOQ, ProjectBOQ
+
+_LOGO_PATH = Path(__file__).parent.parent.parent / "assets" / "images" / "NovaLogo.png"
 
 
 # ── colour palette (matches Nova Excel look) ─────────────────────────────────
@@ -68,18 +71,20 @@ def generate_excel_boq(
     """
     Generate Excel BOQ in Nova Formworks COLUMN sheet format.
     Returns the saved file path.
+    Sheets: COLUMN (main BOQ) + DAYS BOQ (panel reuse schedule)
     """
     wb = openpyxl.Workbook()
 
-    # Remove default sheet, create "COLUMN" sheet
     wb.remove(wb.active)
     ws = wb.create_sheet("COLUMN")
 
     row = _write_header(ws, project)
     row = _write_element_blocks(ws, row, project)
     row = _write_summary(ws, row, project, price_per_sqm, freight_amount, gst_rate)
-
     _set_column_widths(ws)
+
+    # Days BOQ sheet
+    _write_days_boq_sheet(wb, project)
 
     wb.save(output_path)
     return output_path
@@ -89,6 +94,20 @@ def generate_excel_boq(
 
 def _write_header(ws, project: ProjectBOQ) -> int:
     """Write Nova Formworks company header. Returns next free row."""
+
+    # Column A: logo (rows 1-5 merged)
+    ws.merge_cells("A1:A5")
+    ws.column_dimensions["A"].width = 18
+    if _LOGO_PATH.exists():
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+            img = XLImage(str(_LOGO_PATH))
+            img.width  = 120
+            img.height = 36
+            img.anchor = "A1"
+            ws.add_image(img)
+        except Exception:
+            ws["A1"].value = "NOVA"
 
     # Row 1: title
     ws.merge_cells("B1:F1")
@@ -351,5 +370,112 @@ def _set_column_widths(ws):
     }
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
-    # Freeze pane after header
     ws.freeze_panes = "B11"
+
+
+# ── Days BOQ sheet (panel reuse schedule) ─────────────────────────────────────
+
+def _write_days_boq_sheet(wb, project: ProjectBOQ):
+    """
+    Write 'DAYS BOQ' sheet showing panel reuse schedule.
+
+    Logic:
+    - Sort elements by quantity descending (most-needed panels = first day)
+    - Split total panel inventory into Day-1, Day-2, Day-3 deployment batches
+    - Each batch = ~1/3 of total, aligned to element sets
+    - Shows: Panel Size | Total Inventory | Day-1 | Day-2 | Day-3 | Balance
+    """
+    ws = wb.create_sheet("DAYS BOQ")
+
+    # Title
+    ws.merge_cells("A1:J1")
+    c = ws["A1"]
+    c.value = "PANEL REUSE / DEPLOYMENT SCHEDULE"
+    c.font = Font(bold=True, size=13, color="FFFFFF")
+    c.fill = PatternFill("solid", fgColor=_NOVA_BLUE)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 24
+
+    ws.merge_cells("A2:J2")
+    ws["A2"].value = (
+        f"Project: {project.project_name}   |   Client: {project.client_name}   |   "
+        f"Generated: {datetime.date.today().strftime('%d-%m-%Y')}"
+    )
+    ws["A2"].alignment = Alignment(horizontal="center")
+    ws.row_dimensions[2].height = 16
+
+    # Aggregate panel inventory from all element BOQs
+    panel_totals: dict[str, dict] = defaultdict(lambda: {"qty": 0, "w_mm": 0, "h_mm": 0, "elements": []})
+    for boq in project.element_boqs:
+        el = boq.element
+        for panel in boq.panels:
+            k = panel.size_label
+            panel_totals[k]["qty"] += panel.quantity * boq.num_sets
+            panel_totals[k]["w_mm"] = panel.width_mm
+            panel_totals[k]["h_mm"] = panel.height_mm
+            panel_totals[k]["elements"].append(el.label)
+
+    # Sort: OC/IC first, then width descending
+    def _sort_key(k):
+        is_corner = k.startswith("OC") or k.startswith("IC")
+        return (0 if is_corner else 1, -panel_totals[k]["w_mm"])
+
+    sorted_panels = sorted(panel_totals.keys(), key=_sort_key)
+
+    # Header row
+    row = 4
+    headers = ["PANEL SIZE", "TOTAL INVENTORY", "DAY-1", "DAY-2", "DAY-3", "BALANCE", "ELEMENTS COVERED"]
+    col_widths = [20, 18, 12, 12, 12, 12, 40]
+    for i, (h, w) in enumerate(zip(headers, col_widths), start=1):
+        cell = ws.cell(row=row, column=i, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor=_NOVA_BLUE)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[row].height = 32
+    row += 1
+
+    # Data rows — split inventory into 3 days (roughly 1/3 each)
+    _DAY_FILLS = ["DCE9F5", "E2EFDA", "FFF2CC"]  # blue, green, yellow per day
+    for idx, key in enumerate(sorted_panels):
+        d = panel_totals[key]
+        total = d["qty"]
+        # Day split: day1=ceil(1/3), day2=ceil(1/3), day3=remainder
+        day1 = max(1, round(total / 3))
+        day2 = max(1, round(total / 3))
+        day3 = max(0, total - day1 - day2)
+        balance = total - day1 - day2 - day3
+
+        alt = idx % 2 == 1
+        bg = _ALT_FILL if alt else None
+        elements_str = ", ".join(sorted(set(d["elements"]))[:10])
+
+        is_corner = key.startswith("OC") or key.startswith("IC")
+        row_fill = _OC_FILL if is_corner else bg
+
+        ws.cell(row=row, column=1, value=key).font = Font(bold=is_corner)
+        ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=row_fill) if row_fill else PatternFill()
+        ws.cell(row=row, column=2, value=total).alignment = Alignment(horizontal="center")
+        for col_i, (day_val, fill_clr) in enumerate(
+                zip([day1, day2, day3], _DAY_FILLS), start=3):
+            c = ws.cell(row=row, column=col_i, value=day_val)
+            c.fill = PatternFill("solid", fgColor=fill_clr)
+            c.alignment = Alignment(horizontal="center")
+        ws.cell(row=row, column=6, value=balance).alignment = Alignment(horizontal="center")
+        ws.cell(row=row, column=7, value=elements_str).alignment = Alignment(
+            horizontal="left", wrap_text=True)
+        row += 1
+
+    # Note row
+    row += 1
+    ws.merge_cells(f"A{row}:G{row}")
+    note = ws[f"A{row}"]
+    note.value = (
+        "NOTE: Day-wise split is an equal 1/3 estimate. "
+        "Adjust based on actual pour sequence and element priority on site. "
+        "Balance = panels held in reserve."
+    )
+    note.font = Font(italic=True, size=9, color="595959")
+    note.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.row_dimensions[row].height = 28
+    ws.freeze_panes = "A5"

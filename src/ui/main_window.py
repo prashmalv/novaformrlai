@@ -1,9 +1,10 @@
 """
-NovoForm Phase 1 Demo — Main Window (PyQt6)
+NovoForm Phase 2 — Main Window (PyQt6)
 """
 import os
 import json
 from datetime import date
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton,
@@ -14,10 +15,10 @@ from PyQt6.QtWidgets import (
     QHeaderView, QFrame, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont, QColor, QPalette, QIcon
+from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
 
 from src.models.element import (
-    StructuralElement, ElementType, ProjectBOQ, ElementBOQ
+    StructuralElement, ElementType, JunctionType, ProjectBOQ, ElementBOQ
 )
 from src.engine.panel_optimizer import compute_boq
 from src.output.boq_generator import aggregate_project_boq
@@ -146,8 +147,20 @@ class AddElementDialog(QDialog):
         form.setSpacing(10)
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["Column", "Wall", "Shear Wall"])
+        self.type_combo.addItems([
+            "Column", "Wall", "Shear Wall",
+            "Box Culvert", "Drain", "Monolithic"
+        ])
         form.addRow("Element Type:", self.type_combo)
+
+        self.junction_combo = QComboBox()
+        self.junction_combo.addItems(["None", "L-Shape", "T-Shape", "C-Shape"])
+        self.junction_combo.setToolTip("For complex wall junctions (T/L/C). Adds IC panels automatically.")
+        form.addRow("Junction Type:", self.junction_combo)
+
+        self.floor_edit = QLineEdit()
+        self.floor_edit.setPlaceholderText("e.g. GF, 1F, 2F (optional)")
+        form.addRow("Floor Label:", self.floor_edit)
 
         self.label_edit = QLineEdit()
         self.label_edit.setPlaceholderText("e.g. C1, SW1, W-A")
@@ -194,6 +207,9 @@ class AddElementDialog(QDialog):
             self.height_spin.setValue(element.height_mm)
             self.qty_spin.setValue(element.quantity)
             self.notes_edit.setText(element.notes)
+            jt = getattr(element, 'junction_type', JunctionType.NONE)
+            self.junction_combo.setCurrentText(jt.value)
+            self.floor_edit.setText(getattr(element, 'floor_label', ''))
 
         # Buttons
         btns = QDialogButtonBox(
@@ -210,9 +226,18 @@ class AddElementDialog(QDialog):
             return
 
         type_map = {
-            "Column": ElementType.COLUMN,
-            "Wall": ElementType.WALL,
-            "Shear Wall": ElementType.SHEAR_WALL,
+            "Column":      ElementType.COLUMN,
+            "Wall":        ElementType.WALL,
+            "Shear Wall":  ElementType.SHEAR_WALL,
+            "Box Culvert": ElementType.BOX_CULVERT,
+            "Drain":       ElementType.DRAIN,
+            "Monolithic":  ElementType.MONOLITHIC,
+        }
+        junction_map = {
+            "None":    JunctionType.NONE,
+            "L-Shape": JunctionType.L,
+            "T-Shape": JunctionType.T,
+            "C-Shape": JunctionType.C,
         }
         self.result_element = StructuralElement(
             element_type=type_map[self.type_combo.currentText()],
@@ -221,7 +246,9 @@ class AddElementDialog(QDialog):
             width_mm=self.width_spin.value(),
             height_mm=self.height_spin.value(),
             quantity=self.qty_spin.value(),
-            notes=self.notes_edit.text().strip()
+            notes=self.notes_edit.text().strip(),
+            junction_type=junction_map[self.junction_combo.currentText()],
+            floor_label=self.floor_edit.text().strip(),
         )
         self.accept()
 
@@ -337,6 +364,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("NovoForm — Formwork Analysis & BOQ Generator")
         self.resize(1200, 800)
+        _icon_path = Path(__file__).parent.parent.parent / "assets" / "images" / "NovaLogo.png"
+        if _icon_path.exists():
+            self.setWindowIcon(QIcon(str(_icon_path)))
         self._elements: list[StructuralElement] = []
         self._boqs: list[ElementBOQ] = []
         self._acc_boqs: list = []
@@ -390,22 +420,32 @@ class MainWindow(QMainWindow):
     def _make_banner(self) -> QWidget:
         frame = QFrame()
         frame.setStyleSheet(f"background-color: {NOVA_BLUE}; border-radius: 6px;")
-        frame.setFixedHeight(52)
+        frame.setFixedHeight(60)
         lay = QHBoxLayout(frame)
-        lay.setContentsMargins(14, 6, 14, 6)
+        lay.setContentsMargins(10, 4, 14, 4)
 
-        title = QLabel("NovoForm")
-        title.setFont(QFont("Helvetica Neue", 18, QFont.Weight.Bold))
-        title.setStyleSheet("color: white; background: transparent;")
-        lay.addWidget(title)
+        # Nova logo
+        logo_path = Path(__file__).parent.parent.parent / "assets" / "images" / "NovaLogo.png"
+        if logo_path.exists():
+            logo_lbl = QLabel()
+            logo_lbl.setStyleSheet("background: transparent;")
+            pix = QPixmap(str(logo_path))
+            logo_lbl.setPixmap(
+                pix.scaledToHeight(48, Qt.TransformationMode.SmoothTransformation)
+            )
+            logo_lbl.setFixedWidth(160)
+            lay.addWidget(logo_lbl)
+            sep = QLabel("|")
+            sep.setStyleSheet("color: #4a7a9b; background: transparent; font-size: 18px;")
+            lay.addWidget(sep)
 
-        sub = QLabel("Formwork Analysis & BOQ Generator  |  Nova Formworks Pvt. Ltd.")
-        sub.setStyleSheet("color: #a8c8e8; background: transparent; font-size: 11px;")
+        sub = QLabel("Formwork Analysis & BOQ Generator")
+        sub.setStyleSheet("color: #a8c8e8; background: transparent; font-size: 12px; font-weight: bold;")
         lay.addWidget(sub)
 
         lay.addStretch()
 
-        version = QLabel("Phase 1 Demo  v1.0")
+        version = QLabel("Phase 2  v2.0")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 

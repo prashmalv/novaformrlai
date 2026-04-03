@@ -470,25 +470,51 @@ def _find_annotated_dim(cx: float, cy: float,
                          radius: float = 5000,
                          target_mm: float = None) -> float | None:
     """
-    Find a DIMENSION annotation near (cx, cy) whose value is close to target_mm.
-    Returns the annotated value in mm if found, else None.
-    """
-    candidates = []
-    for d in dim_lookup:
-        dist = math.sqrt((d['x'] - cx)**2 + (d['y'] - cy)**2)
-        if dist <= radius:
-            candidates.append((dist, d['mm']))
+    Find the best DIMENSION annotation near (cx, cy) for a given raw dimension.
 
-    if not candidates:
+    Indian structural DXF drawings commonly draw only the reinforcement stirrup
+    cage as the polyline — NOT the concrete face.  The concrete face dimensions
+    are annotated separately and are always >= stirrup cage dimensions.
+
+    Strategy (when target_mm given):
+      1. Search within a tighter radius (max 2500 units) for values in the range
+         [0.85×target, 1.55×target].  Among those, prefer the LARGEST value
+         (outer concrete face ≥ inner stirrup cage).
+      2. Fallback: search full radius for closest value within ±20%.
+    """
+    if not dim_lookup:
         return None
 
-    candidates.sort(key=lambda x: x[0])
-
     if target_mm is None:
-        return candidates[0][1]
+        # No target — return the closest annotation overall
+        best = min(dim_lookup,
+                   key=lambda d: math.sqrt((d['x']-cx)**2 + (d['y']-cy)**2),
+                   default=None)
+        return best['mm'] if best else None
 
-    # Return the one closest in value to target_mm (within 20%)
-    for _, mm in candidates:
+    # --- Pass 1: prefer larger annotation (concrete face > stirrup cage) ---
+    # Use a tighter radius so we don't steal a neighbour's dimension.
+    tight_radius = min(radius, max(target_mm * 2.5, 2500))
+    outer_candidates = []
+    for d in dim_lookup:
+        dist = math.sqrt((d['x'] - cx)**2 + (d['y'] - cy)**2)
+        if dist <= tight_radius and 100 <= d['mm'] <= 6000:
+            # Accept values in [0.85×target … 1.55×target]
+            if target_mm * 0.85 <= d['mm'] <= target_mm * 1.55:
+                outer_candidates.append((dist, d['mm']))
+
+    if outer_candidates:
+        # Among valid candidates, return the LARGEST value.
+        # Largest = outermost (concrete face), which is what formwork needs.
+        outer_candidates.sort(key=lambda x: -x[1])
+        return outer_candidates[0][1]
+
+    # --- Pass 2: fallback — closest value within ±20% (original behaviour) ---
+    all_in_radius = [(math.sqrt((d['x']-cx)**2 + (d['y']-cy)**2), d['mm'])
+                     for d in dim_lookup
+                     if math.sqrt((d['x']-cx)**2 + (d['y']-cy)**2) <= radius]
+    all_in_radius.sort(key=lambda x: x[0])
+    for _, mm in all_in_radius:
         if abs(mm - target_mm) / max(target_mm, 1) < 0.20:
             return mm
 

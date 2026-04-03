@@ -7,10 +7,21 @@ from typing import Optional
 
 
 class ElementType(Enum):
-    COLUMN = "Column"
-    WALL = "Wall"
-    SHEAR_WALL = "Shear Wall"
-    SLAB = "Slab"
+    COLUMN      = "Column"
+    WALL        = "Wall"
+    SHEAR_WALL  = "Shear Wall"
+    SLAB        = "Slab"
+    BOX_CULVERT = "Box Culvert"
+    DRAIN       = "Drain"
+    MONOLITHIC  = "Monolithic"
+
+
+class JunctionType(Enum):
+    """Wall junction shape — affects IC panel placement."""
+    NONE   = "None"         # straight wall (default)
+    L      = "L-Shape"      # L-junction (1 inner corner)
+    T      = "T-Shape"      # T-junction (2 inner corners)
+    C      = "C-Shape"      # C/U-shape  (2 inner corners + enclosed end)
 
 
 @dataclass
@@ -23,6 +34,8 @@ class StructuralElement:
     height_mm: float        # casting height
     quantity: int = 1       # number of identical elements
     notes: str = ""
+    junction_type: JunctionType = JunctionType.NONE   # for complex walls
+    floor_label: str = ""   # e.g. "GF", "1F", "2F" — for multi-floor tracking
 
     @property
     def is_column(self) -> bool:
@@ -31,6 +44,18 @@ class StructuralElement:
     @property
     def is_wall(self) -> bool:
         return self.element_type in (ElementType.WALL, ElementType.SHEAR_WALL)
+
+    @property
+    def is_box_culvert(self) -> bool:
+        return self.element_type == ElementType.BOX_CULVERT
+
+    @property
+    def is_drain(self) -> bool:
+        return self.element_type == ElementType.DRAIN
+
+    @property
+    def is_monolithic(self) -> bool:
+        return self.element_type == ElementType.MONOLITHIC
 
     def __str__(self):
         return (f"{self.label} ({self.element_type.value}) "

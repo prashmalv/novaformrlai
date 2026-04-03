@@ -8,7 +8,7 @@
   },
   "panel_system": {
     "standard_widths_mm": [600, 500, 490, 440, 400, 350, 340, 300, 275, 250, 240, 230, 200, 150, 125, 100, 40],
-    "standard_heights_mm": [3200, 2470, 1228, 900, 600],
+    "standard_heights_mm": [3200, 3000, 2470, 1228, 900, 600],
     "oc_width_mm": 80,
     "ic_width_mm": 100,
     "waller_widths_mm": 40,

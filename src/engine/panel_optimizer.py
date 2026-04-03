@@ -1,18 +1,24 @@
 """
-Panel Optimization Engine.
+Panel Optimization Engine  — Phase 2.
 
-Logic derived from actual Nova Formworks quotations:
-- Each face of a structural element is covered by panels placed side-by-side
-- For columns: 4 faces (2 × length, 2 × width), OC80 at each corner
-- For walls: 2 faces (both sides), OC80 at each end corner
-- Panel widths must sum to the face dimension (exact preferred)
-- If exact match impossible, allow small spacer gap
+Supported element types:
+  Column      : 4 faces, OC80 at 4 corners
+  Wall        : 2 faces, OC80 at 4 end corners
+  Shear Wall  : same as Wall
+  Box Culvert : 4 inner faces (L × H × 2  +  W × H × 2), IC100 at all 4 inner corners
+  Drain       : 3 inner faces (L × H × 2  +  W × H × 1 base), IC100 at 2 bottom corners
+  Monolithic  : treated as column for each column stub; walls handled separately
+
+Complex wall junctions (T / L / C):
+  L-shape : 1 extra IC100 at junction per row
+  T-shape : 2 extra IC100 at junction per row
+  C-shape : 2 extra IC100 at junction per row (enclosed ends use OC)
 """
 import json
 import os
 from typing import Optional
 from src.models.element import (
-    StructuralElement, ElementType, PanelEntry, ElementBOQ
+    StructuralElement, ElementType, JunctionType, PanelEntry, ElementBOQ
 )
 
 # Load config
@@ -73,14 +79,15 @@ def _combo_score(combo: list[int]) -> tuple:
       1. Avoid highly unbalanced splits where the smallest panel is
          less than 1/3 of the largest (e.g. [350,100] for 450mm is bad).
       2. Fewest total panels (fewer handling pieces on site).
-      3. Largest minimum panel (more balanced / symmetric distribution).
-         This picks [500,500] over [600,400] for 1000mm,
-         and [250,200] over [300,150] for 450mm.
+      3a. Prefer symmetric splits (all panels equal width) — e.g. [500,500].
+      3b. Otherwise prefer largest maximum panel — e.g. [600,300] over [500,400].
+         This matches Nova's practice: 900mm → [600,300], 1000mm → [500,500].
     """
     max_p = max(combo)
     min_p = min(combo)
     ugly  = 1 if min_p * 3 < max_p else 0  # 1 = unbalanced split
-    return (ugly, len(combo), -min_p)
+    symmetric = 0 if min_p == max_p else 1  # 0 = all equal (preferred)
+    return (ugly, len(combo), symmetric, -max_p)
 
 
 def _dp_exact(target: int, widths: list[int], max_panels: int) -> Optional[list[int]]:
@@ -242,18 +249,17 @@ def optimize_column(element: StructuralElement, panel_height_mm: float) -> Eleme
 
 def optimize_wall(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
     """
-    Compute formwork BOQ for a rectangular wall.
+    Compute formwork BOQ for a straight or junction wall.
 
-    Wall has 2 main faces (front and back), each length_mm wide.
-    OC at 4 end corners.
-    Tie rods go through the wall thickness.
+    Straight wall : 2 faces × length_mm, OC80 at 4 end corners.
+    L-junction    : add 1 IC100 per row at the inner corner.
+    T-junction    : add 2 IC100 per row at both inner corners.
+    C-junction    : add 2 IC100 per row; enclosed end uses OC like a column end.
     """
     boq = ElementBOQ(element=element)
     warnings = []
-
     panel_h = int(round(panel_height_mm))
 
-    # Height stacking
     h = element.height_mm
     rows = max(1, int(h / panel_h))
     if rows * panel_h < h:
@@ -261,11 +267,9 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
             f"Height {h}mm: {rows} rows give {rows * panel_h}mm. "
             f"Difference {h - rows * panel_h}mm."
         )
-
     achieved_height = rows * panel_h
     boq.height_note = f"{achieved_height}MM"
 
-    # Main faces (2 faces × length_mm wide)
     combo, spacer = find_panel_combination(element.length_mm)
     if spacer > 0:
         warnings.append(f"Wall face {element.length_mm}mm: spacer {spacer}mm.")
@@ -274,41 +278,64 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
 
     panel_counts: dict[str, dict] = {}
 
+    # Flat panels — 2 main faces
     counts = _count_panels(combo)
     for width, cnt in counts.items():
         key = f"{width}X{panel_h}"
-        total_qty = cnt * 2 * rows  # 2 faces
-        panel_counts[key] = {
-            'width': width, 'height': panel_h,
-            'qty': total_qty, 'is_corner': False
-        }
+        total_qty = cnt * 2 * rows
+        panel_counts[key] = {'width': width, 'height': panel_h,
+                              'qty': total_qty, 'is_corner': False}
 
-    # OC at 4 end corners × rows
+    # --- OC corners at straight ends ---
+    jt = getattr(element, 'junction_type', JunctionType.NONE)
+
+    # Straight wall: 4 OC (2 ends × 2 faces)
+    # C-shape: only 2 OC at the open end; enclosed end gets OC too = 4 total
+    oc_qty = 4 * rows
     oc_key = f"OC{OC_WIDTH}X{panel_h}"
-    panel_counts[oc_key] = {
-        'width': OC_WIDTH, 'height': panel_h,
-        'qty': 4 * rows, 'is_corner': True
-    }
+    panel_counts[oc_key] = {'width': OC_WIDTH, 'height': panel_h,
+                             'qty': oc_qty, 'is_corner': True}
 
-    oc_entry = PanelEntry(
-        size_label=oc_key,
-        width_mm=OC_WIDTH, height_mm=panel_h,
-        quantity=panel_counts[oc_key]['qty'],
-        is_corner=True
-    )
-    boq.panels = [oc_entry]
+    # --- IC corners at junctions ---
+    ic_qty = 0
+    if jt == JunctionType.L:
+        ic_qty = 2 * rows        # 1 junction × 2 faces
+        warnings.append("L-shaped junction: IC100 panels added at inner corner.")
+    elif jt == JunctionType.T:
+        ic_qty = 4 * rows        # 2 junctions × 2 faces
+        warnings.append("T-shaped junction: IC100 panels added at both inner corners.")
+    elif jt == JunctionType.C:
+        ic_qty = 4 * rows        # 2 inner corners of C-shape
+        warnings.append("C/U-shaped wall: IC100 panels added at both inner corners.")
+
+    ic_key = f"IC{IC_WIDTH}X{panel_h}"
+    if ic_qty > 0:
+        panel_counts[ic_key] = {'width': IC_WIDTH, 'height': panel_h,
+                                 'qty': ic_qty, 'is_corner': True,
+                                 'is_inner': True}
+
+    # Build PanelEntry list: IC first, then OC, then flat panels
+    boq.panels = []
+    if ic_key in panel_counts:
+        d = panel_counts[ic_key]
+        boq.panels.append(PanelEntry(
+            size_label=ic_key, width_mm=IC_WIDTH, height_mm=panel_h,
+            quantity=d['qty'], is_corner=True, is_inner_corner=True
+        ))
+
+    boq.panels.append(PanelEntry(
+        size_label=oc_key, width_mm=OC_WIDTH, height_mm=panel_h,
+        quantity=panel_counts[oc_key]['qty'], is_corner=True
+    ))
 
     flat_keys = sorted(
-        [k for k in panel_counts if k != oc_key],
-        key=lambda k: panel_counts[k]['width'],
-        reverse=True
+        [k for k in panel_counts if k not in (oc_key, ic_key)],
+        key=lambda k: panel_counts[k]['width'], reverse=True
     )
     for k in flat_keys:
         d = panel_counts[k]
         boq.panels.append(PanelEntry(
-            size_label=k,
-            width_mm=d['width'], height_mm=d['height'],
-            quantity=d['qty']
+            size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
         ))
 
     boq.spacer_mm = max(spacer, 0)
@@ -316,11 +343,174 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
     return boq
 
 
+def optimize_box_culvert(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
+    """
+    Box Culvert formwork BOQ.
+
+    A box culvert is a rectangular tunnel/conduit. The formwork covers:
+      - 2 side walls  : each length_mm × height_mm
+      - 1 soffit slab : length_mm wide (top inner face, if cast in-situ)
+      - 2 end walls   : each width_mm × height_mm
+    Inner corners between walls and soffit use IC100 panels.
+    Outer corners use OC80.
+
+    element.length_mm = inner clear length (span)
+    element.width_mm  = inner clear width (span)
+    element.height_mm = wall height / casting height
+    """
+    boq = ElementBOQ(element=element)
+    warnings = []
+    panel_h = int(round(panel_height_mm))
+
+    h = element.height_mm
+    rows = max(1, int(h / panel_h))
+    if rows * panel_h < h:
+        warnings.append(
+            f"Culvert height {h}mm: {rows} rows = {rows*panel_h}mm. "
+            f"Gap {h - rows*panel_h}mm."
+        )
+    boq.height_note = f"{rows * panel_h}MM"
+
+    panel_counts: dict[str, dict] = {}
+
+    def _add(combo, face_count):
+        for width, cnt in _count_panels(combo).items():
+            key = f"{width}X{panel_h}"
+            qty = cnt * face_count * rows
+            if key in panel_counts:
+                panel_counts[key]['qty'] += qty
+            else:
+                panel_counts[key] = {'width': width, 'height': panel_h,
+                                     'qty': qty, 'is_corner': False}
+
+    # Side walls × 2 (left & right inner faces — length direction)
+    l_combo, l_sp = find_panel_combination(element.length_mm)
+    if l_sp > 0: warnings.append(f"Culvert length {element.length_mm}mm: spacer {l_sp}mm.")
+    _add(l_combo, 2)
+
+    # End walls × 2 (width direction inner faces)
+    w_combo, w_sp = find_panel_combination(element.width_mm)
+    if w_sp > 0: warnings.append(f"Culvert width {element.width_mm}mm: spacer {w_sp}mm.")
+    _add(w_combo, 2)
+
+    # IC100 at all 4 inner vertical corners × rows
+    ic_key = f"IC{IC_WIDTH}X{panel_h}"
+    panel_counts[ic_key] = {'width': IC_WIDTH, 'height': panel_h,
+                             'qty': 4 * rows, 'is_corner': True, 'is_inner': True}
+
+    # OC80 at outer top corners (where walls meet soffit) × 2 per end × rows
+    oc_key = f"OC{OC_WIDTH}X{panel_h}"
+    panel_counts[oc_key] = {'width': OC_WIDTH, 'height': panel_h,
+                             'qty': 4 * rows, 'is_corner': True}
+
+    # Build panel list: IC → OC → flat
+    boq.panels = []
+    boq.panels.append(PanelEntry(
+        size_label=ic_key, width_mm=IC_WIDTH, height_mm=panel_h,
+        quantity=panel_counts[ic_key]['qty'], is_corner=True, is_inner_corner=True
+    ))
+    boq.panels.append(PanelEntry(
+        size_label=oc_key, width_mm=OC_WIDTH, height_mm=panel_h,
+        quantity=panel_counts[oc_key]['qty'], is_corner=True
+    ))
+    for k in sorted([k for k in panel_counts if k not in (oc_key, ic_key)],
+                    key=lambda k: panel_counts[k]['width'], reverse=True):
+        d = panel_counts[k]
+        boq.panels.append(PanelEntry(
+            size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
+        ))
+
+    boq.spacer_mm = max(l_sp, w_sp, 0)
+    boq.warnings = warnings
+    warnings.append("Box Culvert: verify soffit (top slab) formwork with engineer.")
+    return boq
+
+
+def optimize_drain(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
+    """
+    U-shaped Drain (open-top) formwork BOQ.
+
+    3 inner faces:
+      - 2 side walls : length_mm × height_mm each
+      - 1 base       : width_mm × height_mm (bottom inner face, if used)
+    IC100 at 2 bottom inner corners.
+    OC80 at 4 top outer corners.
+
+    element.length_mm = drain length
+    element.width_mm  = inner clear width
+    element.height_mm = drain wall height
+    """
+    boq = ElementBOQ(element=element)
+    warnings = []
+    panel_h = int(round(panel_height_mm))
+
+    h = element.height_mm
+    rows = max(1, int(h / panel_h))
+    if rows * panel_h < h:
+        warnings.append(f"Drain height {h}mm: {rows} rows = {rows*panel_h}mm.")
+    boq.height_note = f"{rows * panel_h}MM"
+
+    panel_counts: dict[str, dict] = {}
+
+    def _add(combo, face_count):
+        for width, cnt in _count_panels(combo).items():
+            key = f"{width}X{panel_h}"
+            qty = cnt * face_count * rows
+            if key in panel_counts:
+                panel_counts[key]['qty'] += qty
+            else:
+                panel_counts[key] = {'width': width, 'height': panel_h,
+                                     'qty': qty, 'is_corner': False}
+
+    l_combo, l_sp = find_panel_combination(element.length_mm)
+    if l_sp > 0: warnings.append(f"Drain length {element.length_mm}mm: spacer {l_sp}mm.")
+    _add(l_combo, 2)   # 2 side walls
+
+    w_combo, w_sp = find_panel_combination(element.width_mm)
+    if w_sp > 0: warnings.append(f"Drain width {element.width_mm}mm: spacer {w_sp}mm.")
+    _add(w_combo, 1)   # 1 base (bottom inner face)
+
+    # IC100 at 2 bottom inner corners × rows
+    ic_key = f"IC{IC_WIDTH}X{panel_h}"
+    panel_counts[ic_key] = {'width': IC_WIDTH, 'height': panel_h,
+                             'qty': 2 * rows, 'is_corner': True, 'is_inner': True}
+
+    # OC80 at 4 top outer corners × rows
+    oc_key = f"OC{OC_WIDTH}X{panel_h}"
+    panel_counts[oc_key] = {'width': OC_WIDTH, 'height': panel_h,
+                             'qty': 4 * rows, 'is_corner': True}
+
+    boq.panels = []
+    boq.panels.append(PanelEntry(
+        size_label=ic_key, width_mm=IC_WIDTH, height_mm=panel_h,
+        quantity=panel_counts[ic_key]['qty'], is_corner=True, is_inner_corner=True
+    ))
+    boq.panels.append(PanelEntry(
+        size_label=oc_key, width_mm=OC_WIDTH, height_mm=panel_h,
+        quantity=panel_counts[oc_key]['qty'], is_corner=True
+    ))
+    for k in sorted([k for k in panel_counts if k not in (oc_key, ic_key)],
+                    key=lambda k: panel_counts[k]['width'], reverse=True):
+        d = panel_counts[k]
+        boq.panels.append(PanelEntry(
+            size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
+        ))
+
+    boq.spacer_mm = max(l_sp, w_sp, 0)
+    boq.warnings = warnings
+    warnings.append("Drain: confirm whether base slab formwork is required on site.")
+    return boq
+
+
 def compute_boq(element: StructuralElement, panel_height_mm: float = 3200) -> ElementBOQ:
     """Main entry: compute BOQ for any element type."""
-    if element.is_column:
+    if element.is_column or element.is_monolithic:
         return optimize_column(element, panel_height_mm)
     elif element.is_wall:
         return optimize_wall(element, panel_height_mm)
+    elif element.is_box_culvert:
+        return optimize_box_culvert(element, panel_height_mm)
+    elif element.is_drain:
+        return optimize_drain(element, panel_height_mm)
     else:
         raise NotImplementedError(f"Element type {element.element_type} not yet supported.")
