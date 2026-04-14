@@ -9,7 +9,8 @@ build/
 *.egg-info/
 .env
 *.pdf
-*.png
+# *.png excluded but allow Nova logo for web deployment
+!assets/images/NovaLogo.png
 tests/*.dxf
 
 # Client data — never commit private project files
