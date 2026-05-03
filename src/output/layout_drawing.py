@@ -507,6 +507,288 @@ def generate_element_layout(
     return output_path
 
 
+# ---------------------------------------------------------------------------
+# 3D Panel Assembly — interactive Figure for dialog embedding
+# ---------------------------------------------------------------------------
+
+def generate_element_layout_3d_figure(
+    element: StructuralElement,
+    boq: ElementBOQ,
+    panel_height_mm: float,
+    acc_agg: dict = None,
+):
+    """
+    Build an interactive 3D panel-assembly figure.
+
+    Returns a matplotlib Figure (NOT saved to disk).
+    Embed in FigureCanvasQTAgg → user can rotate with mouse.
+
+    Layout:
+      Left  — 3D isometric view of assembled formwork panels
+      Right — panel schedule (by face + summary)
+    """
+    from mpl_toolkits.mplot3d import Axes3D              # noqa
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    L_mm  = element.length_mm
+    W_mm  = element.width_mm
+    H_mm  = element.height_mm
+    ph_mm = panel_height_mm
+
+    L  = L_mm  / 1000   # metres
+    W  = W_mm  / 1000
+    H  = H_mm  / 1000
+    oc = OC_WIDTH / 1000
+
+    rows  = max(1, math.ceil(H_mm / ph_mm))
+    row_h = H / rows
+
+    combo_L, spacer_L = find_panel_combination(L_mm)
+    combo_W, spacer_W = find_panel_combination(W_mm)
+
+    # ── Figure setup ──────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(15, 9), facecolor='white')
+
+    # 3D subplot (left 60%)
+    ax3d = fig.add_axes([0.02, 0.08, 0.58, 0.84], projection='3d')
+    ax3d.set_facecolor('#f0f4f8')
+
+    # Info subplot (right 38%)
+    ax_info = fig.add_axes([0.63, 0.08, 0.35, 0.84])
+    ax_info.axis('off')
+
+    # ── Color helpers ─────────────────────────────────────────────────────
+    _palette  = ['#3498db','#2ecc71','#9b59b6','#e74c3c',
+                 '#1abc9c','#16a085','#8e44ad','#d35400']
+    _cmap: dict = {}
+
+    def _pcol(w_mm: int) -> str:
+        if w_mm not in _cmap:
+            _cmap[w_mm] = _palette[len(_cmap) % len(_palette)]
+        return _cmap[w_mm]
+
+    OC_CLR  = '#f39c12'
+    EDG_CLR = 'white'
+
+    def _quad(p1, p2, p3, p4, color, alpha=0.90, lw=0.5):
+        poly = Poly3DCollection([[p1, p2, p3, p4]])
+        poly.set_facecolor(color)
+        poly.set_edgecolor(EDG_CLR)
+        poly.set_linewidth(lw)
+        poly.set_alpha(alpha)
+        ax3d.add_collection3d(poly)
+
+    # ── Draw panels on each face ───────────────────────────────────────────
+    is_col = element.is_column
+
+    if is_col:
+        for row in range(rows):
+            z0 = row * row_h
+            z1 = z0 + row_h
+
+            # Face 1 — front (y=0): panels along x
+            x = 0.0
+            for w in combo_L:
+                pw = w / 1000
+                _quad((x,0,z0),(x+pw,0,z0),(x+pw,0,z1),(x,0,z1), _pcol(w))
+                x += pw
+
+            # Face 2 — right (x=L): panels along y
+            y = 0.0
+            for w in combo_W:
+                pw = w / 1000
+                _quad((L,y,z0),(L,y+pw,z0),(L,y+pw,z1),(L,y,z1), _pcol(w))
+                y += pw
+
+            # Face 3 — back (y=W): panels along x reversed
+            x = L
+            for w in combo_L:
+                pw = w / 1000
+                _quad((x,W,z0),(x-pw,W,z0),(x-pw,W,z1),(x,W,z1), _pcol(w))
+                x -= pw
+
+            # Face 4 — left (x=0): panels along y reversed
+            y = W
+            for w in combo_W:
+                pw = w / 1000
+                _quad((0,y,z0),(0,y-pw,z0),(0,y-pw,z1),(0,y,z1), _pcol(w))
+                y -= pw
+
+        # OC corner strips — orange vertical sliver on each corner edge
+        for row in range(rows):
+            z0 = row * row_h
+            z1 = z0 + row_h
+            for (cx, cy) in [(0, 0), (L, 0), (L, W), (0, W)]:
+                # Thin orange strip on the front-face side of each corner
+                strip_w = min(oc, 0.12)
+                if cx == 0:
+                    _quad((cx, cy, z0),(cx+strip_w, cy, z0),
+                          (cx+strip_w, cy, z1),(cx, cy, z1), OC_CLR, 0.95)
+                else:
+                    _quad((cx-strip_w, cy, z0),(cx, cy, z0),
+                          (cx, cy, z1),(cx-strip_w, cy, z1), OC_CLR, 0.95)
+
+        # Semi-transparent inner concrete box
+        _box_faces = [
+            [(0,0,0),(L,0,0),(L,W,0),(0,W,0)],  # bottom
+            [(0,0,H),(L,0,H),(L,W,H),(0,W,H)],  # top
+        ]
+        inner = Poly3DCollection(_box_faces)
+        inner.set_facecolor('#bdc3c7')
+        inner.set_edgecolor('#7f8c8d')
+        inner.set_linewidth(0.5)
+        inner.set_alpha(0.25)
+        ax3d.add_collection3d(inner)
+
+    else:
+        # WALL — show 2 faces with waller lines
+        for row in range(rows):
+            z0 = row * row_h
+            z1 = z0 + row_h
+            # Front face (y=0)
+            x = 0.0
+            for w in combo_L:
+                pw = w / 1000
+                _quad((x,0,z0),(x+pw,0,z0),(x+pw,0,z1),(x,0,z1), _pcol(w))
+                x += pw
+            # Back face (y=W)
+            x = 0.0
+            for w in combo_L:
+                pw = w / 1000
+                _quad((x,W,z0),(x+pw,W,z0),(x+pw,W,z1),(x+pw,W,z1), _pcol(w))
+                x += pw
+
+        # Waller lines on front face
+        from src.engine.accessories_calc import WALLER_V_SPACING_MM
+        w_rows = math.ceil(H_mm / WALLER_V_SPACING_MM) + 1
+        for i in range(w_rows):
+            wz = i * (H / max(w_rows - 1, 1))
+            ax3d.plot([0, L], [0, 0], [wz, wz],
+                      color='#c0392b', linewidth=2.0, alpha=0.8, zorder=10)
+
+    # ── Axis styling ──────────────────────────────────────────────────────
+    span = max(L, W) * 1.1
+    ax3d.set_xlim(0, span)
+    ax3d.set_ylim(0, span)
+    ax3d.set_zlim(0, H * 1.05)
+    ax3d.set_xlabel('Length (m)', color=NOVA_BLUE, fontsize=8, labelpad=8)
+    ax3d.set_ylabel('Width (m)',  color=NOVA_BLUE, fontsize=8, labelpad=8)
+    ax3d.set_zlabel('Height (m)', color=NOVA_BLUE, fontsize=8, labelpad=8)
+    ax3d.tick_params(axis='both', labelsize=7, colors='#555')
+    ax3d.view_init(elev=22, azim=225)
+    ax3d.set_title(
+        f'{element.label}  —  Panel Assembly  (drag to rotate)',
+        fontsize=10, color=NOVA_BLUE, fontweight='bold', pad=12
+    )
+
+    # ── Panel schedule (right panel) ─────────────────────────────────────
+    y_cur = 0.97
+    line_h = 0.045
+
+    def _write(text, y, bold=False, color=NOVA_BLUE, size=9):
+        ax_info.text(0.02, y, text, transform=ax_info.transAxes,
+                     fontsize=size, color=color,
+                     fontweight='bold' if bold else 'normal', va='top')
+
+    _write(f"Panel Schedule — {element.label}", y_cur, bold=True, size=10)
+    y_cur -= line_h * 1.4
+
+    etype = element.element_type.value
+    _write(f"Type: {etype}  |  {L_mm:.0f} × {W_mm:.0f} mm  |  H = {H_mm:.0f} mm",
+           y_cur, color='#555', size=8)
+    y_cur -= line_h * 1.2
+
+    _write(f"Panel height: {ph_mm:.0f} mm  |  Rows: {rows}  |  Sets: 1",
+           y_cur, color='#555', size=8)
+    y_cur -= line_h * 1.5
+
+    # Separator line
+    ax_info.axhline(y=y_cur + line_h * 0.3, xmin=0.02, xmax=0.98,
+                    color='#b0c4d8', linewidth=0.8,
+                    transform=ax_info.transAxes)
+    y_cur -= line_h * 0.5
+
+    if is_col:
+        for face_label, combo, face_dim in [
+            ('Face 1 & 3  (Length)', combo_L, L_mm),
+            ('Face 2 & 4  (Width)',  combo_W, W_mm),
+        ]:
+            _write(face_label, y_cur, bold=True, color=NOVA_ACCENT, size=8.5)
+            y_cur -= line_h
+
+            total_w = sum(combo)
+            for w in sorted(set(combo), reverse=True):
+                cnt = combo.count(w)
+                sq  = cnt * (w / 1000) * (ph_mm / 1000) * rows
+                col = _pcol(w)
+                # Color swatch
+                ax_info.add_patch(mpatches.Rectangle(
+                    (0.02, y_cur - 0.018), 0.04, 0.032,
+                    transform=ax_info.transAxes,
+                    facecolor=col, edgecolor='#555', linewidth=0.5,
+                ))
+                _write(f"     {w}×{ph_mm:.0f}mm  ×  {cnt} nos  ({sq:.3f} m²)",
+                       y_cur, color='#222', size=8)
+                y_cur -= line_h
+
+            _write(f"  OC80×{ph_mm:.0f}mm  ×  2 nos  (corners)",
+                   y_cur, color='#e67e22', size=8)
+            ax_info.add_patch(mpatches.Rectangle(
+                (0.02, y_cur - 0.018), 0.04, 0.032,
+                transform=ax_info.transAxes,
+                facecolor=OC_CLR, edgecolor='#555', linewidth=0.5,
+            ))
+            y_cur -= line_h * 1.4
+    else:
+        _write('Face 1 & 2  (Both wall faces)', y_cur, bold=True, color=NOVA_ACCENT, size=8.5)
+        y_cur -= line_h
+        for w in sorted(set(combo_L), reverse=True):
+            cnt = combo_L.count(w)
+            sq  = cnt * 2 * (w / 1000) * (ph_mm / 1000) * rows
+            col = _pcol(w)
+            ax_info.add_patch(mpatches.Rectangle(
+                (0.02, y_cur - 0.018), 0.04, 0.032,
+                transform=ax_info.transAxes,
+                facecolor=col, edgecolor='#555', linewidth=0.5,
+            ))
+            _write(f"     {w}×{ph_mm:.0f}mm  ×  {cnt*2} nos  ({sq:.3f} m²)",
+                   y_cur, color='#222', size=8)
+            y_cur -= line_h
+        y_cur -= line_h * 0.4
+
+    # BOQ summary from actual boq object
+    y_cur -= line_h * 0.2
+    ax_info.axhline(y=y_cur + line_h * 0.5, xmin=0.02, xmax=0.98,
+                    color='#b0c4d8', linewidth=0.8, transform=ax_info.transAxes)
+    y_cur -= line_h * 0.3
+
+    _write('BOQ Summary', y_cur, bold=True, size=9)
+    y_cur -= line_h
+    for p in boq.panels:
+        _write(f"  {p.size_label:22s}  {p.quantity:>4} nos  |  {p.total_area_sqm:.3f} m²",
+               y_cur, color='#1a3a5c' if p.is_corner else '#222', size=7.5)
+        y_cur -= line_h * 0.9
+
+    y_cur -= line_h * 0.3
+    _write(f"Total formwork area: {boq.total_panel_area_sqm:.3f} m²",
+           y_cur, bold=True, color=NOVA_ACCENT, size=9)
+
+    # Main title
+    fig.suptitle(
+        f'3D Panel Assembly  —  {element.label}  |  '
+        f'{L_mm:.0f}×{W_mm:.0f}mm  |  H={H_mm:.0f}mm  |  Qty {element.quantity}',
+        fontsize=11, fontweight='bold', color=NOVA_BLUE, y=0.99,
+    )
+    fig.text(
+        0.5, 0.005,
+        'Schematic — verify panel sizes with BOQ table before ordering.  '
+        '|  Nova Formworks Pvt. Ltd.',
+        ha='center', fontsize=6.5, color='#7f8c8d', style='italic',
+    )
+
+    return fig
+
+
 def generate_project_layout(
     elements: list,
     boqs: list,

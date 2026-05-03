@@ -31,9 +31,13 @@ from src.parsers.dwg_parser import (
 from src.engine.accessories_calc import (
     calculate_accessories, aggregate_accessories
 )
-from src.output.layout_drawing import generate_element_layout, generate_project_layout
+from src.output.layout_drawing import (
+    generate_element_layout, generate_project_layout,
+    generate_element_layout_3d_figure,
+)
 from src.ui.drawing_viewer import DXFViewerWidget
 from src.ui.ai_assistant import AIAssistantWidget
+from src.ui.view_3d import Elements3DWidget
 
 # ---------- Style Constants ----------
 NOVA_BLUE = "#1a3a5c"
@@ -419,6 +423,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_project(),         "  Project Info  ")
         self.tabs.addTab(self._tab_elements(),        "  Elements  ")
         self.tabs.addTab(self._tab_drawing_preview(), "  Drawing Preview  ")
+        self.tabs.addTab(self._tab_3d_view(),         "  3D View  ")
         self.tabs.addTab(self._tab_config(),          "  Configuration  ")
         self.tabs.addTab(self._tab_boq(),             "  BOQ Results  ")
         self.tabs.addTab(self._tab_export(),          "  Export  ")
@@ -645,6 +650,30 @@ class MainWindow(QMainWindow):
         legend_row.addStretch()
         lay.addLayout(legend_row)
 
+        return w
+
+    # ====================================================
+    # TAB 3: 3D View
+    # ====================================================
+    def _tab_3d_view(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        info = QLabel(
+            "  3D Elements Overview — all detected elements shown as 3D boxes at their "
+            "actual drawing positions. Heights are to scale.  "
+            "Drag to rotate · Scroll to zoom.  "
+        )
+        info.setStyleSheet(
+            f"background:{NOVA_LIGHT}; color:{NOVA_BLUE}; "
+            f"border-radius:0; padding:5px 10px; font-size:10px;"
+        )
+        lay.addWidget(info)
+
+        self.view_3d = Elements3DWidget()
+        lay.addWidget(self.view_3d, stretch=1)
         return w
 
     def _on_viewer_element_selected(self, idx: int):
@@ -1110,7 +1139,7 @@ class MainWindow(QMainWindow):
                     confirmed_bboxes.append(bboxes_raw[i])
                 added += 1
 
-            # Store bboxes and load drawing preview
+            # Store bboxes and load drawing preview + 3D view
             if bboxes_raw:
                 self._element_bboxes = confirmed_bboxes
                 self._current_dxf_path = path
@@ -1123,10 +1152,18 @@ class MainWindow(QMainWindow):
                         title     = path,
                         dxf_path  = dxf_render_path,
                     )
-                    # Auto-switch to Drawing Preview tab
-                    self.tabs.setCurrentIndex(2)
                 except Exception:
                     pass  # Viewer is optional — don't block import
+                try:
+                    self.view_3d.load_elements(
+                        self._elements[-added:],
+                        bboxes=confirmed_bboxes,
+                        scale=scale_used,
+                    )
+                except Exception:
+                    pass
+                # Auto-switch to Drawing Preview tab
+                self.tabs.setCurrentIndex(2)
 
             self._refresh_element_table()
             QMessageBox.information(
@@ -1187,7 +1224,14 @@ class MainWindow(QMainWindow):
             self._agg, self._acc_agg, self._project
         )
 
-        self.tabs.setCurrentIndex(4)  # Jump to BOQ Results tab
+        # Refresh 3D view with latest elements
+        self.view_3d.load_elements(
+            self._elements,
+            bboxes=self._element_bboxes if self._element_bboxes else None,
+            scale=1.0,
+        )
+
+        self.tabs.setCurrentIndex(5)  # Jump to BOQ Results tab
 
         n_warn = sum(1 for a in self._acc_boqs if a.high_wall_warning)
         msg = (f"BOQ generated for {len(self._elements)} element(s).\n"
@@ -1338,24 +1382,23 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------
 
     def _view_layout_selected(self):
-        """Show panel layout drawing for the currently selected element (or first)."""
+        """Show 3D panel assembly dialog for the currently selected element."""
         if not self._elements or not self._boqs:
             QMessageBox.warning(self, "No BOQ",
                                 "Please run optimization first (Configuration tab).")
             return
 
-        # Prefer the element selected in elem_table; fall back to first
         row = self.elem_table.currentRow()
         if row < 0 or row >= len(self._elements):
             row = 0
 
         element = self._elements[row]
-        boq = self._boqs[row]
+        boq     = self._boqs[row]
         panel_h = float(self.panel_height_combo.currentText())
 
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
-            png_path = generate_element_layout(
+            fig = generate_element_layout_3d_figure(
                 element, boq, panel_h, acc_agg=self._acc_agg
             )
         except Exception as ex:
@@ -1364,7 +1407,53 @@ class MainWindow(QMainWindow):
             return
         self.unsetCursor()
 
-        self._show_layout_dialog(png_path, element.label)
+        self._show_3d_layout_dialog(fig, element.label)
+
+    def _show_3d_layout_dialog(self, fig, title: str):
+        """Open a resizable dialog with the interactive 3D panel assembly figure."""
+        try:
+            from matplotlib.backends.backend_qtagg import (
+                FigureCanvasQTAgg, NavigationToolbar2QT
+            )
+        except ImportError:
+            QMessageBox.warning(self, "Unavailable",
+                                "matplotlib Qt backend not available.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"3D Panel Assembly — {title}")
+        dlg.resize(1200, 720)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        canvas  = FigureCanvasQTAgg(fig)
+        toolbar = NavigationToolbar2QT(canvas, dlg)
+        toolbar.setStyleSheet(
+            "QToolBar{background:#1a3a5c;border:none;padding:2px;spacing:4px;}"
+            "QToolButton{background:#2c5f8a;color:white;border-radius:3px;"
+            "padding:3px 7px;font-size:11px;}"
+            "QToolButton:hover{background:#3a7ab0;}"
+        )
+
+        tip = QLabel(
+            "  Drag to rotate  ·  Right-drag to pan  ·  Scroll to zoom  ·  "
+            "Use toolbar to reset view"
+        )
+        tip.setStyleSheet(
+            f"background:{NOVA_LIGHT}; color:{NOVA_BLUE}; "
+            f"font-size:10px; padding:4px 10px;"
+        )
+
+        layout.addWidget(toolbar)
+        layout.addWidget(canvas, stretch=1)
+        layout.addWidget(tip)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        dlg.exec()
 
     def _show_layout_dialog(self, png_path: str, title: str):
         """Open a resizable dialog showing the layout PNG."""
