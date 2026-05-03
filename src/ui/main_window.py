@@ -25,7 +25,8 @@ from src.output.boq_generator import aggregate_project_boq
 from src.output.pdf_generator import generate_pdf
 from src.output.excel_generator import generate_excel_boq
 from src.parsers.dwg_parser import (
-    parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf
+    parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf,
+    parse_dxf_full, parse_dwg_full,
 )
 from src.engine.accessories_calc import (
     calculate_accessories, aggregate_accessories
@@ -681,6 +682,7 @@ class MainWindow(QMainWindow):
         self.panel_height_combo = QComboBox()
         self.panel_height_combo.addItems(["3200", "2470", "1228", "900", "600"])
         self.panel_height_combo.setCurrentText("3200")
+        self.panel_height_combo.setMinimumWidth(160)
         f1.addRow("Panel Height (mm):", self.panel_height_combo)
 
         self.num_sets_spin = QSpinBox()
@@ -1059,16 +1061,15 @@ class MainWindow(QMainWindow):
         panel_h = float(self.panel_height_combo.currentText())
 
         self.setCursor(Qt.CursorShape.WaitCursor)
-        bboxes_raw   = []
+        bboxes_raw    = []
         all_polylines = []
         scale_used    = 1.0
         try:
             if path.lower().endswith('.dxf'):
-                from src.parsers.dwg_parser import parse_dxf_full
                 detected, bboxes_raw, all_polylines, scale_used = parse_dxf_full(path, panel_h)
                 err = None
             else:
-                detected, err = parse_dwg(path, panel_h)
+                detected, bboxes_raw, all_polylines, scale_used, err = parse_dwg_full(path, panel_h)
         except Exception as ex:
             detected, err = [], str(ex)
         finally:
