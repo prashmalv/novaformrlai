@@ -763,6 +763,185 @@ def _merge_by_dimensions(elements: list) -> list:
     return merged
 
 
+def parse_dxf_full(
+    dxf_path: str,
+    casting_height_mm: float = 3000,
+    unit_override: str = None,
+) -> tuple[list, list[tuple], list[list], float]:
+    """
+    Parse a DXF file and return rich data for the drawing viewer.
+
+    Returns:
+        elements     — list of StructuralElement (same as parse_dxf)
+        bboxes_raw   — list of (x_min, y_min, x_max, y_max) in RAW DXF units
+                       one entry per element (aligned with elements list)
+        all_polylines — list of [(x,y),...] point lists for ALL closed polylines
+                        (used to render the drawing background)
+        scale        — mm per DXF unit (detected scale factor)
+    """
+    if not EZDXF_OK:
+        raise RuntimeError("ezdxf not installed.")
+
+    doc = ezdxf.readfile(dxf_path)
+    msp = doc.modelspace()
+
+    if unit_override:
+        scale = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0,
+                 'inch': 25.4, 'ft': 304.8}.get(unit_override.lower(), 1.0)
+    else:
+        scale = _detect_scale(doc, msp)
+
+    dim_lookup = _build_dimension_lookup(msp, scale)
+    texts      = _extract_text_entities(msp)
+
+    # ── Collect ALL closed polylines for background rendering ────────────────
+    all_polylines: list[list] = []
+    for entity in msp:
+        if entity.dxftype() == 'LWPOLYLINE':
+            try:
+                pts = [(p[0], p[1]) for p in entity.get_points()]
+                if len(pts) >= 2:
+                    all_polylines.append(pts)
+            except Exception:
+                pass
+        elif entity.dxftype() == 'LINE':
+            try:
+                p1 = (entity.dxf.start.x, entity.dxf.start.y)
+                p2 = (entity.dxf.end.x,   entity.dxf.end.y)
+                all_polylines.append([p1, p2])
+            except Exception:
+                pass
+
+    # ── Extract elements (reuse the full parse_dxf logic) ───────────────────
+    elements_raw:   list = []
+    bboxes_raw:     list[tuple] = []
+    seen_labels:    set[str] = set()
+    label_counters: dict[str, int] = defaultdict(int)
+
+    def _next_label(prefix: str) -> str:
+        label_counters[prefix] += 1
+        return f"{prefix}{label_counters[prefix]}"
+
+    for entity in msp:
+        if entity.dxftype() not in ('LWPOLYLINE', 'POLYLINE'):
+            continue
+        try:
+            if not entity.is_closed:
+                continue
+        except Exception:
+            continue
+
+        bbox = _get_polyline_bbox(entity)
+        if not bbox:
+            continue
+
+        w_draw, h_draw = _bbox_dims(bbox)
+        w_mm = w_draw * scale
+        h_mm = h_draw * scale
+
+        if w_mm < 50 or h_mm < 50:
+            continue
+
+        length_mm_raw = max(w_mm, h_mm)
+        width_mm_raw  = min(w_mm, h_mm)
+
+        layer = ""
+        try:
+            layer = entity.dxf.layer
+        except Exception:
+            pass
+
+        elem_type = _classify_element(length_mm_raw, width_mm_raw, layer)
+        if elem_type is None:
+            continue
+
+        cx = (bbox[0] + bbox[2]) / 2
+        cy = (bbox[1] + bbox[3]) / 2
+
+        annotated_len = _find_annotated_dim(cx, cy, dim_lookup,
+                                            radius=max(length_mm_raw, 5000),
+                                            target_mm=length_mm_raw)
+        annotated_wid = _find_annotated_dim(cx, cy, dim_lookup,
+                                            radius=max(width_mm_raw, 3000),
+                                            target_mm=width_mm_raw)
+
+        length_mm = round(annotated_len if annotated_len else length_mm_raw)
+        width_mm  = round(annotated_wid  if annotated_wid  else width_mm_raw)
+
+        elem_type = _classify_element(length_mm, width_mm, layer) or elem_type
+
+        label = _find_nearby_label(cx, cy, texts)
+        if label is None:
+            prefix = "C" if elem_type == ElementType.COLUMN else "SW"
+            label  = _next_label(prefix)
+
+        if label in seen_labels:
+            for e, b in zip(elements_raw, bboxes_raw):
+                if e.label == label:
+                    e.quantity += 1
+                    break
+            continue
+
+        matched = False
+        if not re.match(r'^(C|SW|W|B|S|P)\d+[A-Z]?$', label, re.I):
+            for e in elements_raw:
+                if (e.element_type == elem_type and
+                        abs(e.length_mm - length_mm) <= 10 and
+                        abs(e.width_mm  - width_mm)  <= 10):
+                    e.quantity += 1
+                    matched = True
+                    break
+
+        if matched:
+            continue
+
+        seen_labels.add(label)
+        elements_raw.append(StructuralElement(
+            element_type=elem_type,
+            label=label,
+            length_mm=length_mm,
+            width_mm=width_mm,
+            height_mm=casting_height_mm,
+            quantity=1,
+            notes=f"Layer: {layer}",
+        ))
+        bboxes_raw.append(bbox)  # raw DXF coords for viewer overlay
+
+    # Merge by dimensions (keeps bboxes aligned by tracking indices)
+    merged_elements, merged_bboxes = _merge_with_bboxes(elements_raw, bboxes_raw)
+    return merged_elements, merged_bboxes, all_polylines, scale
+
+
+def _merge_with_bboxes(
+    elements: list,
+    bboxes: list[tuple],
+) -> tuple[list, list[tuple]]:
+    """Merge duplicate elements, keeping representative bbox for each group."""
+    merged_elems:  list       = []
+    merged_bboxes: list[tuple] = []
+
+    for elem, bbox in zip(elements, bboxes):
+        best_match_idx = None
+        for i, existing in enumerate(merged_elems):
+            if (existing.element_type == elem.element_type and
+                    abs(existing.length_mm - elem.length_mm) <= 5 and
+                    abs(existing.width_mm  - elem.width_mm)  <= 5):
+                best_match_idx = i
+                break
+
+        if best_match_idx is not None:
+            merged_elems[best_match_idx].quantity += elem.quantity
+            if (len(elem.label) < len(merged_elems[best_match_idx].label) or
+                    (len(elem.label) == len(merged_elems[best_match_idx].label) and
+                     elem.label < merged_elems[best_match_idx].label)):
+                merged_elems[best_match_idx].label = elem.label
+        else:
+            merged_elems.append(elem)
+            merged_bboxes.append(bbox)
+
+    return merged_elems, merged_bboxes
+
+
 def parse_dwg(dwg_path: str,
               casting_height_mm: float = 3000,
               unit_override: str = None,

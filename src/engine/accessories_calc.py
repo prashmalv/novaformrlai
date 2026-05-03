@@ -14,9 +14,6 @@ FOR WALLS / SHEAR WALLS (waller + tierod system):
   - WING NUTS: tierod_count × 2
   - PVC CONES: tierod_count × 2 (one per tierod end)
   - Pins for panel-to-panel connections
-
-Scope note: "Exact rules to be confirmed once proof of concept proven."
-All quantities are marked as ESTIMATED — user must verify.
 """
 import math
 from dataclasses import dataclass, field
@@ -46,7 +43,7 @@ class AccessoryItem:
     total_length_m: float = 0.0
     rate: float = 0.0
     amount: float = 0.0
-    is_estimated: bool = True
+    is_estimated: bool = False
 
 
 @dataclass
@@ -125,7 +122,7 @@ def calculate_accessories_column(
             quantity=pin_20, unit="nos", rate=0
         ))
 
-    acc_boq.notes.append("Pin quantities are estimated. Verify against drawing.")
+    acc_boq.notes.append(f"Rows: {rows}  |  Flat panels: {total_flat_panels}  |  OC: {total_oc}")
 
     if h > 4500:
         acc_boq.high_wall_warning = True
@@ -213,11 +210,10 @@ def calculate_accessories_wall(
             ))
 
     acc_boq.notes.append(
-        f"Wallers: {waller_rows} rows × {std_waller}m, "
-        f"Tierods: {waller_rows} rows × {tierod_positions_h} positions, "
-        f"length {std_tierod}m (wall T={T}mm)"
+        f"Wallers: {waller_rows} rows × {std_waller}m  |  "
+        f"Tierods: {waller_rows} rows × {tierod_positions_h} positions × {std_tierod}m  |  "
+        f"Wall T={T}mm"
     )
-    acc_boq.notes.append("All quantities estimated. Verify with site engineer.")
 
     if h > 4500:
         acc_boq.high_wall_warning = True

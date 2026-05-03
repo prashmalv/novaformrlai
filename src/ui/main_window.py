@@ -31,6 +31,8 @@ from src.engine.accessories_calc import (
     calculate_accessories, aggregate_accessories
 )
 from src.output.layout_drawing import generate_element_layout, generate_project_layout
+from src.ui.drawing_viewer import DXFViewerWidget
+from src.ui.ai_assistant import AIAssistantWidget
 
 # ---------- Style Constants ----------
 NOVA_BLUE = "#1a3a5c"
@@ -373,6 +375,8 @@ class MainWindow(QMainWindow):
         self._project = ProjectBOQ()
         self._agg = None
         self._acc_agg = None
+        self._element_bboxes: list = []   # DXF bboxes for drawing viewer
+        self._current_dxf_path: str = ""  # last imported DXF path
 
         self._setup_ui()
         self._apply_global_style()
@@ -411,11 +415,13 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
 
-        self.tabs.addTab(self._tab_project(), "  Project Info  ")
-        self.tabs.addTab(self._tab_elements(), "  Elements  ")
-        self.tabs.addTab(self._tab_config(), "  Configuration  ")
-        self.tabs.addTab(self._tab_boq(), "  BOQ Results  ")
-        self.tabs.addTab(self._tab_export(), "  Export  ")
+        self.tabs.addTab(self._tab_project(),         "  Project Info  ")
+        self.tabs.addTab(self._tab_elements(),        "  Elements  ")
+        self.tabs.addTab(self._tab_drawing_preview(), "  Drawing Preview  ")
+        self.tabs.addTab(self._tab_config(),          "  Configuration  ")
+        self.tabs.addTab(self._tab_boq(),             "  BOQ Results  ")
+        self.tabs.addTab(self._tab_export(),          "  Export  ")
+        self.tabs.addTab(self._tab_ai_assistant(),    "  AI Assistant  ")
 
     def _make_banner(self) -> QWidget:
         frame = QFrame()
@@ -445,7 +451,7 @@ class MainWindow(QMainWindow):
 
         lay.addStretch()
 
-        version = QLabel("Phase 2  v2.0")
+        version = QLabel("Phase 3  v3.0")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -593,7 +599,68 @@ class MainWindow(QMainWindow):
         return w
 
     # ====================================================
-    # TAB 3: Configuration
+    # TAB 3: Drawing Preview
+    # ====================================================
+    def _tab_drawing_preview(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+
+        # Info banner
+        info = QLabel(
+            "  Drawing Preview — auto-detected elements are highlighted. "
+            "Click any element to select it. Double-click to edit.  "
+            "Use the toolbar above the drawing to zoom & pan."
+        )
+        info.setStyleSheet(
+            f"background:{NOVA_LIGHT}; color:{NOVA_BLUE}; "
+            f"border-radius:4px; padding:6px 10px; font-size:10px;"
+        )
+        info.setWordWrap(True)
+        lay.addWidget(info)
+
+        # The viewer widget
+        self.drawing_viewer = DXFViewerWidget()
+        self.drawing_viewer.element_selected.connect(self._on_viewer_element_selected)
+        self.drawing_viewer.element_double_clicked.connect(self._on_viewer_element_dblclick)
+        lay.addWidget(self.drawing_viewer, stretch=1)
+
+        # Legend row
+        legend_row = QHBoxLayout()
+        legend_row.setContentsMargins(0, 0, 0, 0)
+        colors_legend = [
+            ("Column", "#1565C0"), ("Wall", "#1B5E20"),
+            ("Shear Wall", "#B71C1C"), ("Box Culvert", "#4A148C"),
+            ("Drain", "#E65100"),
+        ]
+        for name, color in colors_legend:
+            dot = QLabel(f"● {name}")
+            dot.setStyleSheet(
+                f"color:{color}; font-size:10px; font-weight:bold; "
+                f"margin-right:12px; background:transparent;"
+            )
+            legend_row.addWidget(dot)
+        legend_row.addStretch()
+        lay.addLayout(legend_row)
+
+        return w
+
+    def _on_viewer_element_selected(self, idx: int):
+        """Drawing viewer click → highlight row in Elements table."""
+        if 0 <= idx < self.elem_table.rowCount():
+            self.elem_table.selectRow(idx)
+            self.tabs.setCurrentIndex(1)  # switch to Elements tab
+
+    def _on_viewer_element_dblclick(self, idx: int):
+        """Drawing viewer double-click → open edit dialog."""
+        if 0 <= idx < len(self._elements):
+            self.tabs.setCurrentIndex(1)
+            self.elem_table.selectRow(idx)
+            self._edit_element()
+
+    # ====================================================
+    # TAB 4: Configuration
     # ====================================================
     def _tab_config(self) -> QWidget:
         w = QWidget()
@@ -752,7 +819,7 @@ class MainWindow(QMainWindow):
         acc_widget = QWidget()
         acc_lay = QVBoxLayout(acc_widget)
         acc_lay.setContentsMargins(0, 0, 0, 0)
-        acc_lay.addWidget(QLabel("B — Accessories Summary (Estimated — verify with engineer):"))
+        acc_lay.addWidget(QLabel("B — Accessories Summary:"))
 
         self.acc_table = QTableWidget(0, 4)
         self.acc_table.setHorizontalHeaderLabels([
@@ -771,6 +838,29 @@ class MainWindow(QMainWindow):
         splitter.addWidget(acc_widget)
         lay.addWidget(splitter)
 
+        return w
+
+    # ====================================================
+    # TAB 6: AI Assistant
+    # ====================================================
+    def _tab_ai_assistant(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        info = QLabel(
+            "  Ask questions about your current BOQ in plain English. "
+            "Works 100% offline — no internet required.  "
+        )
+        info.setStyleSheet(
+            f"background:{NOVA_LIGHT}; color:{NOVA_BLUE}; "
+            f"border-radius:0; padding:5px 10px; font-size:10px;"
+        )
+        lay.addWidget(info)
+
+        self.ai_widget = AIAssistantWidget()
+        lay.addWidget(self.ai_widget, stretch=1)
         return w
 
     # ====================================================
@@ -969,10 +1059,13 @@ class MainWindow(QMainWindow):
         panel_h = float(self.panel_height_combo.currentText())
 
         self.setCursor(Qt.CursorShape.WaitCursor)
+        bboxes_raw   = []
+        all_polylines = []
+        scale_used    = 1.0
         try:
             if path.lower().endswith('.dxf'):
-                from src.parsers.dwg_parser import parse_dxf
-                detected = parse_dxf(path, panel_h)
+                from src.parsers.dwg_parser import parse_dxf_full
+                detected, bboxes_raw, all_polylines, scale_used = parse_dxf_full(path, panel_h)
                 err = None
             else:
                 detected, err = parse_dwg(path, panel_h)
@@ -1002,17 +1095,39 @@ class MainWindow(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             confirmed = dlg.get_confirmed_elements()
             added = 0
-            for elem in confirmed:
-                # Check for duplicate labels
+            confirmed_bboxes = []
+            for i, elem in enumerate(confirmed):
                 existing_labels = [e.label for e in self._elements]
                 if elem.label in existing_labels:
                     elem.label = elem.label + "_dwg"
                 self._elements.append(elem)
+                # Keep bbox aligned (bbox list may be shorter if DWG path used)
+                if i < len(bboxes_raw):
+                    confirmed_bboxes.append(bboxes_raw[i])
                 added += 1
+
+            # Store bboxes and load drawing preview
+            if bboxes_raw:
+                self._element_bboxes = confirmed_bboxes
+                self._current_dxf_path = path
+                try:
+                    self.drawing_viewer.load_drawing(
+                        elements  = self._elements[-added:],
+                        bboxes    = confirmed_bboxes,
+                        polylines = all_polylines,
+                        scale     = scale_used,
+                        title     = path,
+                    )
+                    # Auto-switch to Drawing Preview tab
+                    self.tabs.setCurrentIndex(2)
+                except Exception:
+                    pass  # Viewer is optional — don't block import
+
             self._refresh_element_table()
             QMessageBox.information(
                 self, "Import Complete",
                 f"{added} element(s) imported from drawing.\n"
+                f"Drawing preview loaded in the 'Drawing Preview' tab.\n"
                 f"Please review dimensions before running optimization."
             )
 
@@ -1020,7 +1135,7 @@ class MainWindow(QMainWindow):
         if not self._elements:
             QMessageBox.warning(self, "No Elements",
                                 "Please add at least one structural element first.")
-            self.tabs.setCurrentIndex(1)
+            self.tabs.setCurrentIndex(1)  # Elements tab
             return
 
         panel_h = float(self.panel_height_combo.currentText())
@@ -1060,7 +1175,14 @@ class MainWindow(QMainWindow):
         self._acc_agg = aggregate_accessories(self._acc_boqs, self.num_sets_spin.value())
 
         self._refresh_boq_tables()
-        self.tabs.setCurrentIndex(3)  # Jump to BOQ tab
+
+        # Feed latest data into AI assistant
+        self.ai_widget.update_data(
+            self._elements, self._boqs,
+            self._agg, self._acc_agg, self._project
+        )
+
+        self.tabs.setCurrentIndex(4)  # Jump to BOQ Results tab
 
         n_warn = sum(1 for a in self._acc_boqs if a.high_wall_warning)
         msg = (f"BOQ generated for {len(self._elements)} element(s).\n"
