@@ -703,9 +703,8 @@ def generate_element_layout_3d_figure(
     y_cur -= line_h * 1.5
 
     # Separator line
-    ax_info.axhline(y=y_cur + line_h * 0.3, xmin=0.02, xmax=0.98,
-                    color='#b0c4d8', linewidth=0.8,
-                    transform=ax_info.transAxes)
+    ax_info.plot([0.02, 0.98], [y_cur + line_h * 0.3] * 2,
+                 color='#b0c4d8', linewidth=0.8, transform=ax_info.transAxes)
     y_cur -= line_h * 0.5
 
     if is_col:
@@ -758,8 +757,8 @@ def generate_element_layout_3d_figure(
 
     # BOQ summary from actual boq object
     y_cur -= line_h * 0.2
-    ax_info.axhline(y=y_cur + line_h * 0.5, xmin=0.02, xmax=0.98,
-                    color='#b0c4d8', linewidth=0.8, transform=ax_info.transAxes)
+    ax_info.plot([0.02, 0.98], [y_cur + line_h * 0.5] * 2,
+                 color='#b0c4d8', linewidth=0.8, transform=ax_info.transAxes)
     y_cur -= line_h * 0.3
 
     _write('BOQ Summary', y_cur, bold=True, size=9)

@@ -1412,9 +1412,8 @@ class MainWindow(QMainWindow):
     def _show_3d_layout_dialog(self, fig, title: str):
         """Open a resizable dialog with the interactive 3D panel assembly figure."""
         try:
-            from matplotlib.backends.backend_qtagg import (
-                FigureCanvasQTAgg, NavigationToolbar2QT
-            )
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+            from src.ui.mpl_toolbar import NovoToolbar as NavigationToolbar2QT
         except ImportError:
             QMessageBox.warning(self, "Unavailable",
                                 "matplotlib Qt backend not available.")

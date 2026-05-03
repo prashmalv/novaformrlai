@@ -10,7 +10,8 @@ try:
     import matplotlib
     matplotlib.use('QtAgg')
     from matplotlib.figure import Figure
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+    from src.ui.mpl_toolbar import NovoToolbar as NavigationToolbar2QT
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers '3d' projection
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     import matplotlib.patches as mpatches

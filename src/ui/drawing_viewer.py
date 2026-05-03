@@ -9,7 +9,8 @@ try:
     import matplotlib
     matplotlib.use('QtAgg')
     from matplotlib.figure import Figure
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+    from src.ui.mpl_toolbar import NovoToolbar as NavigationToolbar2QT
     import matplotlib.patches as mpatches
     MPL_OK = True
 except ImportError:
