@@ -975,18 +975,19 @@ def parse_dwg_full(
     casting_height_mm: float = 3000,
     unit_override: str = None,
     temp_dir: str = None,
-) -> tuple[list, list[tuple], list[list], float, str | None]:
+) -> tuple[list, list[tuple], list[list], float, str | None, str]:
     """
     Parse a DWG file and return rich data for the drawing viewer.
 
     Converts DWG→DXF internally, then delegates to parse_dxf_full().
 
     Returns:
-        elements      — list of StructuralElement
-        bboxes_raw    — list of (x_min, y_min, x_max, y_max) per element
-        all_polylines — list of [(x,y),...] for ALL geometry (background render)
-        scale         — mm per DXF unit
-        error         — error string or None on success
+        elements        — list of StructuralElement
+        bboxes_raw      — list of (x_min, y_min, x_max, y_max) per element
+        all_polylines   — list of [(x,y),...] for ALL geometry (background render)
+        scale           — mm per DXF unit
+        error           — error string or None on success
+        dxf_render_path — path to the converted DXF (for full AutoCAD renderer)
     """
     dxf_path = dwg_to_dxf(dwg_path, temp_dir)
     if not dxf_path:
@@ -997,12 +998,12 @@ def parse_dwg_full(
             "Or install ODA File Converter from:\n"
             "  https://www.opendesign.com/guestfiles/oda_file_converter\n\n"
             "Alternatively, export DXF from AutoCAD (File → Save As → DXF)."
-        )
+        ), ""
 
     try:
         elements, bboxes, polylines, scale = parse_dxf_full(
             dxf_path, casting_height_mm, unit_override
         )
-        return elements, bboxes, polylines, scale, None
+        return elements, bboxes, polylines, scale, None, dxf_path
     except Exception as ex:
-        return [], [], [], 1.0, f"DXF parsing error after DWG conversion: {ex}"
+        return [], [], [], 1.0, f"DXF parsing error after DWG conversion: {ex}", ""

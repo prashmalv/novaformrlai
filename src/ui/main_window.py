@@ -1061,15 +1061,18 @@ class MainWindow(QMainWindow):
         panel_h = float(self.panel_height_combo.currentText())
 
         self.setCursor(Qt.CursorShape.WaitCursor)
-        bboxes_raw    = []
-        all_polylines = []
-        scale_used    = 1.0
+        bboxes_raw      = []
+        all_polylines   = []
+        scale_used      = 1.0
+        dxf_render_path = ""
         try:
             if path.lower().endswith('.dxf'):
                 detected, bboxes_raw, all_polylines, scale_used = parse_dxf_full(path, panel_h)
+                dxf_render_path = path
                 err = None
             else:
-                detected, bboxes_raw, all_polylines, scale_used, err = parse_dwg_full(path, panel_h)
+                detected, bboxes_raw, all_polylines, scale_used, err, dxf_render_path = \
+                    parse_dwg_full(path, panel_h)
         except Exception as ex:
             detected, err = [], str(ex)
         finally:
@@ -1118,6 +1121,7 @@ class MainWindow(QMainWindow):
                         polylines = all_polylines,
                         scale     = scale_used,
                         title     = path,
+                        dxf_path  = dxf_render_path,
                     )
                     # Auto-switch to Drawing Preview tab
                     self.tabs.setCurrentIndex(2)
