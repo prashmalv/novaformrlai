@@ -14,6 +14,8 @@ class ElementType(Enum):
     BOX_CULVERT = "Box Culvert"
     DRAIN       = "Drain"
     MONOLITHIC  = "Monolithic"
+    BEAM_BOTTOM = "Beam Bottom"
+    BEAM_SIDE   = "Beam Side"
 
 
 class JunctionType(Enum):
@@ -56,6 +58,14 @@ class StructuralElement:
     @property
     def is_monolithic(self) -> bool:
         return self.element_type == ElementType.MONOLITHIC
+
+    @property
+    def is_beam_bottom(self) -> bool:
+        return self.element_type == ElementType.BEAM_BOTTOM
+
+    @property
+    def is_beam_side(self) -> bool:
+        return self.element_type == ElementType.BEAM_SIDE
 
     def __str__(self):
         return (f"{self.label} ({self.element_type.value}) "

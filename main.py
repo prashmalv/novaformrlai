@@ -8,9 +8,12 @@ import os
 # Ensure src is on path
 sys.path.insert(0, os.path.dirname(__file__))
 
+import socket
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
 from src.ui.main_window import MainWindow
+from src.ui.login_dialog import LoginDialog
+from src.auth.auth_manager import log_action
 
 
 def main():
@@ -25,9 +28,22 @@ def main():
     font = QFont(chosen if chosen else QFont().family(), 10)
     app.setFont(font)
 
-    window = MainWindow()
+    # ── Login gate ────────────────────────────────────────────────────────────
+    login = LoginDialog()
+    if login.exec() != LoginDialog.DialogCode.Accepted:
+        sys.exit(0)
+
+    user = login.authenticated_user
+    log_action(user["username"], user["full_name"], "LOGIN",
+               f"Host: {socket.gethostname()}")
+
+    # ── Main window ───────────────────────────────────────────────────────────
+    window = MainWindow(current_user=user)
     window.show()
-    sys.exit(app.exec())
+
+    exit_code = app.exec()
+    log_action(user["username"], user["full_name"], "LOGOUT", "Application closed")
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

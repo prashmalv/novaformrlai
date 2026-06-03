@@ -196,6 +196,9 @@ def _bbox_dims(bbox: tuple) -> tuple[float, float]:
 DIM_PATTERN = re.compile(
     r'(\d+(?:[.,]\d+)?)\s*(mm|cm|m|\'|"|-0")?', re.IGNORECASE)
 
+# Matches "750x375", "750X375", "750×375" in text entities
+_DIM_TEXT_RE = re.compile(r'(\d{2,4})\s*[xX×]\s*(\d{2,4})')
+
 
 def _parse_dimension_value(text: str, default_unit: str = "mm") -> float | None:
     """
@@ -261,18 +264,64 @@ def _extract_text_entities(msp) -> list[dict]:
     return texts
 
 
+_FLOOR_LABEL_RE = re.compile(
+    r'^(GF|RF|TF|PH|B[1-9]|[FB]\d{1,2}|\d{1,2}F)$', re.I
+)
+
+
 def _find_nearby_label(cx: float, cy: float, texts: list[dict],
-                        radius: float = 2000) -> str | None:
-    """Find nearest text label within radius of center point."""
-    best, best_d = None, float('inf')
+                        radius: float = 2000) -> tuple[str | None, str]:
+    """
+    Find nearest element label within radius of center point.
+    Returns (label, floor_label) — floor_label is '' if no valid floor suffix.
+    Handles: C1, SW1, CC1, CC1/F1, W3/GF (Drawing-4 style multi-floor labels).
+    Floor label validated against common patterns (GF, F1-F99, B1-B9, RF, TF, PH).
+    """
+    best, best_d, best_floor = None, float('inf'), ''
     for t in texts:
         d = math.sqrt((t['x'] - cx)**2 + (t['y'] - cy)**2)
-        if d < radius and d < best_d:
-            # Check if it looks like an element label (C1, SW1, W1 etc.)
-            content = t['content'].strip()
-            if re.match(r'^(C|SW|W|B|S|P)\d+[A-Z]?$', content, re.I):
-                best, best_d = content.upper(), d
-    return best
+        if d >= radius or d >= best_d:
+            continue
+        content = t['content'].strip()
+        # Multi-floor format: LABEL/FLOOR  e.g. CC1/F1, W3/GF
+        mf = re.match(r'^([A-Za-z]{1,3}\d+[A-Za-z]?)/([A-Za-z0-9]+)$', content, re.I)
+        if mf:
+            candidate_label = mf.group(1).upper()
+            candidate_floor = mf.group(2).upper()
+            # Only accept floor suffix if it looks like a real floor designation
+            if _FLOOR_LABEL_RE.match(candidate_floor):
+                best, best_d, best_floor = candidate_label, d, candidate_floor
+            else:
+                # Treat the whole thing as a plain label (ignore the suffix)
+                best, best_d, best_floor = candidate_label, d, ''
+            continue
+        # Standard label: C1, SW1, CC1, WW2, etc.
+        if re.match(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$', content, re.I):
+            best, best_d, best_floor = content.upper(), d, ''
+    return best, best_floor
+
+
+def _find_dims_from_text(cx: float, cy: float, texts: list[dict],
+                          radius: float = 2000) -> tuple[float, float] | None:
+    """
+    Fallback dimension extraction from nearby text like '750x375'.
+    Returns (long_mm, short_mm) or None if nothing found.
+    Used when DIMENSION annotations are absent (Drawing-4 style drawings).
+    """
+    candidates = []
+    for t in texts:
+        d = math.sqrt((t['x'] - cx)**2 + (t['y'] - cy)**2)
+        if d > radius:
+            continue
+        m = _DIM_TEXT_RE.search(t['content'])
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if a >= 100 and b >= 100:  # ignore tiny annotation values
+                candidates.append((d, float(max(a, b)), float(min(a, b))))
+    if candidates:
+        candidates.sort()
+        return candidates[0][1], candidates[0][2]
+    return None
 
 
 def _extract_dimension_entities(msp) -> list[dict]:
@@ -680,17 +729,26 @@ def parse_dxf(dxf_path: str,
                                             radius=max(width_mm_raw, 3000),
                                             target_mm=width_mm_raw)
 
-        length_mm = round(annotated_len if annotated_len else length_mm_raw)
-        width_mm  = round(annotated_wid  if annotated_wid  else width_mm_raw)
+        # --- Fallback: extract dims from nearby "NNNxNNN" text (Drawing-4 style) ---
+        text_dims = None
+        if not annotated_len or not annotated_wid:
+            text_dims = _find_dims_from_text(
+                cx, cy, texts, radius=max(length_mm_raw * 2, 2000))
+
+        length_mm = round(annotated_len if annotated_len else
+                          (text_dims[0] if text_dims else length_mm_raw))
+        width_mm  = round(annotated_wid  if annotated_wid  else
+                          (text_dims[1] if text_dims else width_mm_raw))
 
         # Re-classify with refined dimensions
         elem_type = _classify_element(length_mm, width_mm, layer) or elem_type
 
-        # --- Find nearby label ---
-        label = _find_nearby_label(cx, cy, texts)
+        # --- Find nearby label (returns label + floor_label) ---
+        label, floor_label = _find_nearby_label(cx, cy, texts)
         if label is None:
             prefix = "C" if elem_type == ElementType.COLUMN else "SW"
             label = _next_label(prefix)
+            floor_label = ""
 
         if label in seen_labels:
             for e in elements:
@@ -700,10 +758,8 @@ def parse_dxf(dxf_path: str,
             continue
 
         # Also check if an unlabeled auto-generated element with same type+dims exists
-        # (same position in the drawing = genuinely repeated element without label)
         matched = False
-        if not re.match(r'^(C|SW|W|B|S|P)\d+[A-Z]?$', label, re.I):
-            # Auto-generated label — look for existing element with same dims
+        if not re.match(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$', label, re.I):
             for e in elements:
                 if (e.element_type == elem_type and
                         abs(e.length_mm - length_mm) <= 10 and
@@ -724,6 +780,7 @@ def parse_dxf(dxf_path: str,
             width_mm=width_mm,
             height_mm=casting_height_mm,
             quantity=1,
+            floor_label=floor_label,
             notes=f"Layer: {layer} | Scale×{scale}"
         ))
 
@@ -865,15 +922,23 @@ def parse_dxf_full(
                                             radius=max(width_mm_raw, 3000),
                                             target_mm=width_mm_raw)
 
-        length_mm = round(annotated_len if annotated_len else length_mm_raw)
-        width_mm  = round(annotated_wid  if annotated_wid  else width_mm_raw)
+        text_dims = None
+        if not annotated_len or not annotated_wid:
+            text_dims = _find_dims_from_text(
+                cx, cy, texts, radius=max(length_mm_raw * 2, 2000))
+
+        length_mm = round(annotated_len if annotated_len else
+                          (text_dims[0] if text_dims else length_mm_raw))
+        width_mm  = round(annotated_wid  if annotated_wid  else
+                          (text_dims[1] if text_dims else width_mm_raw))
 
         elem_type = _classify_element(length_mm, width_mm, layer) or elem_type
 
-        label = _find_nearby_label(cx, cy, texts)
+        label, floor_label = _find_nearby_label(cx, cy, texts)
         if label is None:
             prefix = "C" if elem_type == ElementType.COLUMN else "SW"
             label  = _next_label(prefix)
+            floor_label = ""
 
         if label in seen_labels:
             for e, b in zip(elements_raw, bboxes_raw):
@@ -883,7 +948,7 @@ def parse_dxf_full(
             continue
 
         matched = False
-        if not re.match(r'^(C|SW|W|B|S|P)\d+[A-Z]?$', label, re.I):
+        if not re.match(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$', label, re.I):
             for e in elements_raw:
                 if (e.element_type == elem_type and
                         abs(e.length_mm - length_mm) <= 10 and
@@ -903,6 +968,7 @@ def parse_dxf_full(
             width_mm=width_mm,
             height_mm=casting_height_mm,
             quantity=1,
+            floor_label=floor_label,
             notes=f"Layer: {layer}",
         ))
         bboxes_raw.append(bbox)  # raw DXF coords for viewer overlay

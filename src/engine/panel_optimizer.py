@@ -502,6 +502,134 @@ def optimize_drain(element: StructuralElement, panel_height_mm: float) -> Elemen
     return boq
 
 
+IC_75_WIDTH: int = 75   # supplementary inner-corner panel used in beam-slab junctions
+
+
+def optimize_beam_bottom(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
+    """
+    Beam Bottom formwork BOQ.
+
+    The bottom shutter sits beneath the beam and consists of:
+      - 1 flat panel whose width ≥ beam internal clear width (element.width_mm)
+      - 2 OC80 panels locking the sides (one each end of the flat panel)
+    This assembly is expressed as: (OC+{flat_w}+OC)X{height_mm}
+
+    element.width_mm  = beam internal clear width  (selects flat panel size)
+    element.height_mm = beam depth / shuttering height  (= assembly height)
+    element.length_mm = beam span (informational; not used for panel count)
+    element.quantity  = number of beam bottom sets
+    """
+    boq = ElementBOQ(element=element)
+    warnings: list[str] = []
+
+    depth = int(round(element.height_mm))   # beam depth = panel height for this assembly
+    beam_w = element.width_mm               # internal clear width
+
+    # Find the nearest standard flat panel width ≥ beam_w
+    flat_w = next((w for w in sorted(STANDARD_WIDTHS) if w >= beam_w), max(STANDARD_WIDTHS))
+    if flat_w > beam_w:
+        warnings.append(
+            f"Beam width {beam_w:.0f}mm: using nearest standard panel {flat_w}mm "
+            f"(overshoot {flat_w - beam_w:.0f}mm)."
+        )
+
+    # Panel label format: (OC+{flat_w}+OC)X{depth}
+    label = f"(OC+{flat_w}+OC)X{depth}"
+
+    # area = (OC_width + flat_w + OC_width) × depth
+    total_w_mm = OC_WIDTH + flat_w + OC_WIDTH
+    area_sqm = round(total_w_mm * depth / 1_000_000, 6)
+
+    boq.panels = [
+        PanelEntry(
+            size_label=label,
+            width_mm=total_w_mm,
+            height_mm=depth,
+            quantity=element.quantity,
+            area_sqm=area_sqm,
+        )
+    ]
+    boq.height_note = f"{depth}MM"
+    boq.warnings = warnings
+    return boq
+
+
+def optimize_beam_side(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
+    """
+    Beam Side & Slab formwork BOQ.
+
+    Covers the two vertical side faces of a beam plus the slab soffit panels at
+    the beam-slab junction.
+
+    element.height_mm = beam side height (depth of the beam side face)
+    element.length_mm = beam span (determines how many panels along the side)
+    element.width_mm  = beam wall thickness (used for accessories; not for panel count)
+    element.quantity  = number of beam side sets
+
+    Panels per side:
+      - IC100 × 1 at each end of the beam side (beam-slab junction corner)
+      - Flat panels covering (length_mm − 2×IC100_width) span
+    Both sides (× 2).
+    """
+    boq = ElementBOQ(element=element)
+    warnings: list[str] = []
+
+    beam_h  = int(round(element.height_mm))   # beam side height
+    beam_L  = element.length_mm               # beam span
+
+    # IC100 occupies IC_WIDTH mm at each end of both sides
+    ic_used = IC_WIDTH * 2
+    flat_span = max(0.0, beam_L - ic_used)
+
+    # Flat panel combination for the remaining span
+    if flat_span > 0:
+        combo, spacer = find_panel_combination(flat_span)
+        if spacer > 0:
+            warnings.append(f"Beam side span {flat_span:.0f}mm: spacer {spacer:.0f}mm needed.")
+    else:
+        combo, spacer = [], 0.0
+
+    panel_counts: dict[str, dict] = {}
+
+    # IC100 at 2 ends × 2 sides
+    ic_key = f"IC{IC_WIDTH}X{beam_h}"
+    panel_counts[ic_key] = {
+        'width': IC_WIDTH, 'height': beam_h,
+        'qty': 4 * element.quantity, 'is_corner': True, 'is_inner': True
+    }
+
+    # Flat panels × 2 sides
+    for w, cnt in _count_panels(combo).items():
+        key = f"{w}X{beam_h}"
+        qty = cnt * 2 * element.quantity
+        if key in panel_counts:
+            panel_counts[key]['qty'] += qty
+        else:
+            panel_counts[key] = {'width': w, 'height': beam_h,
+                                  'qty': qty, 'is_corner': False}
+
+    boq.panels = []
+    boq.panels.append(PanelEntry(
+        size_label=ic_key, width_mm=IC_WIDTH, height_mm=beam_h,
+        quantity=panel_counts[ic_key]['qty'], is_corner=True, is_inner_corner=True
+    ))
+    for k in sorted([k for k in panel_counts if k != ic_key],
+                    key=lambda k: panel_counts[k]['width'], reverse=True):
+        d = panel_counts[k]
+        boq.panels.append(PanelEntry(
+            size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
+        ))
+
+    boq.height_note = f"{beam_h}MM"
+    boq.spacer_mm = spacer
+    boq.warnings = warnings
+    warnings.append(
+        f"Beam Side: IC100 at 2 ends per side. "
+        f"Flat panels cover {flat_span:.0f}mm span × 2 sides."
+    )
+    return boq
+
+
 def compute_boq(element: StructuralElement, panel_height_mm: float = 3200) -> ElementBOQ:
     """Main entry: compute BOQ for any element type."""
     if element.is_column or element.is_monolithic:
@@ -512,5 +640,9 @@ def compute_boq(element: StructuralElement, panel_height_mm: float = 3200) -> El
         return optimize_box_culvert(element, panel_height_mm)
     elif element.is_drain:
         return optimize_drain(element, panel_height_mm)
+    elif element.is_beam_bottom:
+        return optimize_beam_bottom(element, panel_height_mm)
+    elif element.is_beam_side:
+        return optimize_beam_side(element, panel_height_mm)
     else:
         raise NotImplementedError(f"Element type {element.element_type} not yet supported.")

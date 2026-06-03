@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QScrollArea, QTextEdit, QSplitter,
     QHeaderView, QFrame, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
 
 from src.models.element import (
@@ -22,11 +22,16 @@ from src.models.element import (
 )
 from src.engine.panel_optimizer import compute_boq
 from src.output.boq_generator import aggregate_project_boq
-from src.output.pdf_generator import generate_pdf
+from src.output.pdf_generator import generate_pdf, generate_boq_pdf, generate_quotation_pdf
 from src.output.excel_generator import generate_excel_boq
 from src.parsers.dwg_parser import (
     parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf,
     parse_dxf_full, parse_dwg_full,
+)
+from src.parsers.pdf_parser import (
+    render_pdf_page, get_page_count, extract_title_block,
+    extract_elements_ai, extract_elements_cv,
+    get_api_key, save_api_key,
 )
 from src.engine.accessories_calc import (
     calculate_accessories, aggregate_accessories
@@ -156,7 +161,8 @@ class AddElementDialog(QDialog):
         self.type_combo = QComboBox()
         self.type_combo.addItems([
             "Column", "Wall", "Shear Wall",
-            "Box Culvert", "Drain", "Monolithic"
+            "Box Culvert", "Drain", "Monolithic",
+            "Beam Bottom", "Beam Side"
         ])
         form.addRow("Element Type:", self.type_combo)
 
@@ -239,6 +245,8 @@ class AddElementDialog(QDialog):
             "Box Culvert": ElementType.BOX_CULVERT,
             "Drain":       ElementType.DRAIN,
             "Monolithic":  ElementType.MONOLITHIC,
+            "Beam Bottom": ElementType.BEAM_BOTTOM,
+            "Beam Side":   ElementType.BEAM_SIDE,
         }
         junction_map = {
             "None":    JunctionType.NONE,
@@ -292,7 +300,7 @@ class DWGReviewDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setStyleSheet(TABLE_STYLE)
 
-        type_options = ["Column", "Wall", "Shear Wall"]
+        type_options = ["Column", "Wall", "Shear Wall", "Beam Bottom", "Beam Side"]
 
         for i, e in enumerate(elements):
             # Checkbox column
@@ -363,13 +371,425 @@ class DWGReviewDialog(QDialog):
         return result
 
 
+# ---------- PDF Import Dialog ----------
+
+class PDFImportDialog(QDialog):
+    """
+    Shows a rendered PDF drawing page. Auto-extracts structural elements
+    using Claude Vision AI, then lets user review/edit before confirming.
+    """
+    def __init__(self, pdf_path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Import from PDF Drawing — AI Extraction")
+        self.resize(1260, 720)
+        self._elements: list[StructuralElement] = []
+        self._pdf_path = pdf_path
+        self._page_num = 0
+        self._total_pages = get_page_count(pdf_path)
+        self._zoom = 1.0
+
+        root = QVBoxLayout(self)
+
+        # ── Info bar ──────────────────────────────────────────────────────
+        meta = extract_title_block(pdf_path)
+        info_text = (
+            f"<b>PDF:</b> {Path(pdf_path).name}"
+            + (f"  |  <b>Project:</b> {meta['project_name']}" if meta['project_name'] else "")
+            + (f"  |  <b>Drawing No:</b> {meta['drawing_no']}" if meta['drawing_no'] else "")
+            + f"  |  <b>Pages:</b> {self._total_pages}"
+        )
+        info = QLabel(info_text)
+        info.setWordWrap(True)
+        info.setStyleSheet(
+            f"background:{NOVA_LIGHT}; color:{NOVA_BLUE}; padding:6px; "
+            f"border-radius:4px; font-size:11px;")
+        root.addWidget(info)
+
+        # ── Main splitter ─────────────────────────────────────────────────
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        root.addWidget(splitter, stretch=1)
+
+        # Left — PDF viewer
+        left = QWidget()
+        left_lay = QVBoxLayout(left)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+
+        nav_row = QHBoxLayout()
+        self._page_label = QLabel(f"Page 1 / {self._total_pages}")
+        self._page_label.setStyleSheet("font-size:11px;")
+        btn_prev = QPushButton("◀")
+        btn_prev.setFixedWidth(36)
+        btn_prev.setStyleSheet(BTN_SECONDARY)
+        btn_prev.clicked.connect(self._prev_page)
+        btn_next = QPushButton("▶")
+        btn_next.setFixedWidth(36)
+        btn_next.setStyleSheet(BTN_SECONDARY)
+        btn_next.clicked.connect(self._next_page)
+        btn_zin  = QPushButton("＋")
+        btn_zin.setFixedWidth(36)
+        btn_zin.setStyleSheet(BTN_SECONDARY)
+        btn_zin.clicked.connect(self._zoom_in)
+        btn_zout = QPushButton("－")
+        btn_zout.setFixedWidth(36)
+        btn_zout.setStyleSheet(BTN_SECONDARY)
+        btn_zout.clicked.connect(self._zoom_out)
+        btn_fit  = QPushButton("Fit")
+        btn_fit.setFixedWidth(42)
+        btn_fit.setStyleSheet(BTN_SECONDARY)
+        btn_fit.clicked.connect(self._zoom_fit)
+
+        nav_row.addWidget(btn_prev)
+        nav_row.addWidget(self._page_label)
+        nav_row.addWidget(btn_next)
+        nav_row.addStretch()
+        nav_row.addWidget(btn_zout)
+        nav_row.addWidget(btn_zin)
+        nav_row.addWidget(btn_fit)
+        left_lay.addLayout(nav_row)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setStyleSheet("background:#555;")
+        self._img_label = QLabel()
+        self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setWidget(self._img_label)
+        left_lay.addWidget(self._scroll)
+        splitter.addWidget(left)
+
+        # Right — AI extract + element table
+        right = QWidget()
+        right.setMinimumWidth(340)
+        right.setMaximumWidth(440)
+        right_lay = QVBoxLayout(right)
+
+        # Extraction buttons row
+        ext_row = QHBoxLayout()
+        self._btn_ai = QPushButton("✨ Extract with AI")
+        self._btn_ai.setStyleSheet(BTN_STYLE)
+        self._btn_ai.setMinimumHeight(34)
+        self._btn_ai.setToolTip("Uses Claude AI Vision — requires API key. Most accurate (~95%).")
+        self._btn_ai.clicked.connect(self._auto_extract_ai)
+        ext_row.addWidget(self._btn_ai)
+
+        self._btn_cv = QPushButton("🔍 Extract Offline")
+        self._btn_cv.setStyleSheet(BTN_SECONDARY)
+        self._btn_cv.setMinimumHeight(34)
+        self._btn_cv.setToolTip(
+            "Uses OpenCV + EasyOCR — no API key needed. "
+            "First run downloads ~150 MB models (once only).")
+        self._btn_cv.clicked.connect(self._auto_extract_cv)
+        ext_row.addWidget(self._btn_cv)
+        right_lay.addLayout(ext_row)
+
+        self._ai_status = QLabel(
+            "AI: accurate, needs API key  |  Offline: free, downloads OCR models on first run")
+        self._ai_status.setWordWrap(True)
+        self._ai_status.setStyleSheet("font-size:10px; color:#555; padding:2px 4px;")
+        right_lay.addWidget(self._ai_status)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color:#ccc;")
+        right_lay.addWidget(sep)
+
+        hdr = QLabel("Detected Elements  (review before confirming)")
+        hdr.setStyleSheet(
+            f"font-weight:bold; font-size:12px; color:{NOVA_BLUE}; padding:2px 4px;")
+        right_lay.addWidget(hdr)
+
+        self._elem_table = QTableWidget(0, 4)
+        self._elem_table.setHorizontalHeaderLabels(["Label", "Type", "L×W mm", "H mm"])
+        self._elem_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._elem_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._elem_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._elem_table.setAlternatingRowColors(True)
+        self._elem_table.setStyleSheet(TABLE_STYLE)
+        right_lay.addWidget(self._elem_table)
+
+        btn_row = QHBoxLayout()
+        btn_add = QPushButton("＋ Add")
+        btn_add.setStyleSheet(BTN_SECONDARY)
+        btn_add.clicked.connect(self._add_element)
+        btn_edit = QPushButton("Edit")
+        btn_edit.setStyleSheet(BTN_SECONDARY)
+        btn_edit.clicked.connect(self._edit_element)
+        btn_del = QPushButton("Delete")
+        btn_del.setStyleSheet(BTN_SECONDARY)
+        btn_del.clicked.connect(self._delete_element)
+        btn_row.addWidget(btn_add)
+        btn_row.addWidget(btn_edit)
+        btn_row.addWidget(btn_del)
+        right_lay.addLayout(btn_row)
+
+        # Casting height for all imported elements
+        h_row = QHBoxLayout()
+        h_row.addWidget(QLabel("Casting Height:"))
+        self._height_spin = QDoubleSpinBox()
+        self._height_spin.setRange(500, 15000)
+        self._height_spin.setValue(3000)
+        self._height_spin.setSuffix(" mm")
+        self._height_spin.setDecimals(0)
+        h_row.addWidget(self._height_spin)
+        right_lay.addLayout(h_row)
+
+        splitter.addWidget(right)
+        splitter.setSizes([860, 380])
+
+        # ── Bottom buttons ────────────────────────────────────────────────
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._on_ok)
+        btns.rejected.connect(self.reject)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setStyleSheet(BTN_STYLE)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Add to Project →")
+        root.addWidget(btns)
+
+        self._render_page()
+
+    # ── Rendering ─────────────────────────────────────────────────────────
+
+    def _render_page(self):
+        try:
+            png_bytes, _, _ = render_pdf_page(self._pdf_path, self._page_num, dpi=150)
+        except Exception as ex:
+            self._img_label.setText(f"Cannot render: {ex}")
+            return
+        self._base_pixmap = QPixmap()
+        self._base_pixmap.loadFromData(png_bytes)
+        self._page_label.setText(f"Page {self._page_num + 1} / {self._total_pages}")
+        self._apply_zoom()
+
+    def _apply_zoom(self):
+        if not hasattr(self, '_base_pixmap') or self._base_pixmap.isNull():
+            return
+        scaled = self._base_pixmap.scaled(
+            int(self._base_pixmap.width()  * self._zoom),
+            int(self._base_pixmap.height() * self._zoom),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._img_label.setPixmap(scaled)
+        self._img_label.resize(scaled.size())
+
+    def _zoom_in(self):
+        self._zoom = min(self._zoom * 1.3, 4.0); self._apply_zoom()
+
+    def _zoom_out(self):
+        self._zoom = max(self._zoom / 1.3, 0.2); self._apply_zoom()
+
+    def _zoom_fit(self):
+        if not hasattr(self, '_base_pixmap') or self._base_pixmap.isNull():
+            return
+        vp = self._scroll.viewport()
+        self._zoom = min((vp.width() - 20) / self._base_pixmap.width(),
+                         (vp.height() - 20) / self._base_pixmap.height())
+        self._apply_zoom()
+
+    def _prev_page(self):
+        if self._page_num > 0:
+            self._page_num -= 1; self._render_page()
+
+    def _next_page(self):
+        if self._page_num < self._total_pages - 1:
+            self._page_num += 1; self._render_page()
+
+    # ── Extraction ────────────────────────────────────────────────────────────
+
+    def _auto_extract_ai(self):
+        key = get_api_key()
+        if not key:
+            key = self._ask_api_key()
+            if not key:
+                return
+        self._run_extraction(
+            lambda: extract_elements_ai(self._pdf_path, self._page_num, api_key=key),
+            busy_msg="Analysing drawing with AI… please wait (5–15 sec).",
+        )
+
+    def _auto_extract_cv(self):
+        self._run_extraction(
+            lambda: extract_elements_cv(self._pdf_path, self._page_num),
+            busy_msg=(
+                "Running offline OCR… first run downloads ~150 MB models. "
+                "Please wait (30–60 sec)."),
+        )
+
+    def _run_extraction(self, fn, busy_msg: str):
+        from PyQt6.QtWidgets import QApplication
+        self._btn_ai.setEnabled(False)
+        self._btn_cv.setEnabled(False)
+        self._ai_status.setText(busy_msg)
+        self._ai_status.setStyleSheet("font-size:10px; color:#1a5c1a; padding:2px 4px;")
+        QApplication.processEvents()
+
+        try:
+            raw = fn()
+        except Exception as ex:
+            self._ai_status.setText(f"Extraction failed: {ex}")
+            self._ai_status.setStyleSheet("font-size:10px; color:#c00; padding:2px 4px;")
+            self._btn_ai.setEnabled(True)
+            self._btn_cv.setEnabled(True)
+            return
+
+        self._btn_ai.setEnabled(True)
+        self._btn_cv.setEnabled(True)
+
+        if not raw:
+            self._ai_status.setText(
+                "No elements found. Try the other method or add manually below.")
+            self._ai_status.setStyleSheet("font-size:10px; color:#b85c00; padding:2px 4px;")
+            return
+
+        type_map = {
+            "column":     ElementType.COLUMN,
+            "wall":       ElementType.WALL,
+            "shear wall": ElementType.SHEAR_WALL,
+            "shearwall":  ElementType.SHEAR_WALL,
+        }
+        casting_h = self._height_spin.value()
+        added = 0
+        for item in raw:
+            etype  = type_map.get(item["type"].lower(), ElementType.COLUMN)
+            length = item.get("length_mm") or item.get("width_mm") or 0
+            width  = item.get("width_mm")  or item.get("length_mm") or 0
+            if length == 0:
+                continue
+            self._elements.append(StructuralElement(
+                element_type = etype,
+                label        = item["label"],
+                length_mm    = float(max(length, width)),
+                width_mm     = float(min(length, width)),
+                height_mm    = casting_h,
+                quantity     = max(1, item.get("quantity", 1)),
+            ))
+            added += 1
+
+        self._refresh_table()
+        self._ai_status.setText(
+            f"✓ {added} element(s) detected. "
+            "Review and set correct casting height before confirming.")
+        self._ai_status.setStyleSheet(
+            "font-size:10px; color:#1a5c1a; font-weight:bold; padding:2px 4px;")
+
+    def _ask_api_key(self) -> str | None:
+        """Prompt user to enter Anthropic API key, save it for future use."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Anthropic API Key Required")
+        dlg.setMinimumWidth(480)
+        lay = QVBoxLayout(dlg)
+
+        lay.addWidget(QLabel(
+            "<b>An Anthropic API key is required for AI extraction.</b><br><br>"
+            "Get your key from: <a href='https://console.anthropic.com'>console.anthropic.com</a><br>"
+            "The key is saved locally in config/api_config.json for future use."
+        ))
+        lbl = QLabel()
+        lbl.setOpenExternalLinks(True)
+        lay.addWidget(lbl)
+
+        key_edit = QLineEdit()
+        key_edit.setPlaceholderText("sk-ant-api03-...")
+        key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        lay.addWidget(key_edit)
+
+        show_chk = QCheckBox("Show key")
+        show_chk.toggled.connect(
+            lambda v: key_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if v else QLineEdit.EchoMode.Password))
+        lay.addWidget(show_chk)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            key = key_edit.text().strip()
+            if key:
+                save_api_key(key)
+                return key
+        return None
+
+    # ── Element management ────────────────────────────────────────────────
+
+    def _refresh_table(self):
+        self._elem_table.setRowCount(len(self._elements))
+        for i, e in enumerate(self._elements):
+            self._elem_table.setItem(i, 0, QTableWidgetItem(e.label))
+            self._elem_table.setItem(i, 1, QTableWidgetItem(e.element_type.value))
+            self._elem_table.setItem(i, 2, QTableWidgetItem(
+                f"{int(e.length_mm)}×{int(e.width_mm)}"))
+            self._elem_table.setItem(i, 3, QTableWidgetItem(str(int(e.height_mm))))
+
+    def _add_element(self):
+        dlg = AddElementDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_element:
+            self._elements.append(dlg.result_element)
+            self._refresh_table()
+
+    def _edit_element(self):
+        row = self._elem_table.currentRow()
+        if row < 0 or row >= len(self._elements):
+            return
+        dlg = AddElementDialog(self, self._elements[row])
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_element:
+            self._elements[row] = dlg.result_element
+            self._refresh_table()
+
+    def _delete_element(self):
+        row = self._elem_table.currentRow()
+        if 0 <= row < len(self._elements):
+            self._elements.pop(row)
+            self._refresh_table()
+
+    def _on_ok(self):
+        if not self._elements:
+            QMessageBox.warning(self, "No Elements",
+                                "No elements to add. Use Auto-Extract or add manually.")
+            return
+        self.accept()
+
+    def get_elements(self) -> list[StructuralElement]:
+        return list(self._elements)
+
+
+# ---------- Background DXF parser worker ----------
+
+class _DXFParserWorker(QThread):
+    """Runs parse_dxf_full / parse_dwg_full on a background thread so the UI stays responsive."""
+    finished = pyqtSignal(object)   # emits (detected, bboxes, polylines, scale, err, dxf_render_path)
+
+    def __init__(self, path: str, panel_h: float, casting_h: float, parent=None):
+        super().__init__(parent)
+        self._path     = path
+        self._panel_h  = panel_h
+        self._casting_h = casting_h
+
+    def run(self):
+        try:
+            if self._path.lower().endswith('.dxf'):
+                detected, bboxes, polylines, scale = parse_dxf_full(
+                    self._path, self._casting_h)
+                self.finished.emit((detected, bboxes, polylines, scale, None, self._path))
+            else:
+                detected, bboxes, polylines, scale, err, dxf_path = parse_dwg_full(
+                    self._path, self._casting_h)
+                self.finished.emit((detected, bboxes, polylines, scale, err, dxf_path))
+        except Exception as ex:
+            self.finished.emit(([], [], [], 1.0, str(ex), ""))
+
+
 # ---------- Main Window ----------
 
 class MainWindow(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, current_user: dict | None = None):
         super().__init__()
-        self.setWindowTitle("NovoForm — Formwork Analysis & BOQ Generator")
+        self._user = current_user or {"username": "unknown", "full_name": "Unknown", "role": "user"}
+        self.setWindowTitle(
+            f"NovoForm — Formwork BOQ Generator  |  {self._user['full_name']}")
         self.resize(1200, 800)
         _icon_path = Path(__file__).parent.parent.parent / "assets" / "images" / "NovaLogo.png"
         if _icon_path.exists():
@@ -380,8 +800,11 @@ class MainWindow(QMainWindow):
         self._project = ProjectBOQ()
         self._agg = None
         self._acc_agg = None
-        self._element_bboxes: list = []   # DXF bboxes for drawing viewer
-        self._current_dxf_path: str = ""  # last imported DXF path
+        self._element_bboxes: list = []
+        self._current_dxf_path: str = ""
+        # Deferred render args — set after import, consumed when user opens that tab
+        self._pending_dxf_render_args: dict | None = None
+        self._pending_3d_render_args:  dict | None = None
 
         self._setup_ui()
         self._apply_global_style()
@@ -429,6 +852,25 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_export(),          "  Export  ")
         self.tabs.addTab(self._tab_ai_assistant(),    "  AI Assistant  ")
 
+        # Lazy rendering: Drawing Preview (2) and 3D View (3) render only on demand
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index: int):
+        if index == 2 and self._pending_dxf_render_args is not None:
+            args = self._pending_dxf_render_args
+            self._pending_dxf_render_args = None
+            try:
+                self.drawing_viewer.load_drawing(**args)
+            except Exception:
+                pass
+        elif index == 3 and self._pending_3d_render_args is not None:
+            args = self._pending_3d_render_args
+            self._pending_3d_render_args = None
+            try:
+                self.view_3d.load_elements(**args)
+            except Exception:
+                pass
+
     def _make_banner(self) -> QWidget:
         frame = QFrame()
         frame.setStyleSheet(f"background-color: {NOVA_BLUE}; border-radius: 6px;")
@@ -457,11 +899,45 @@ class MainWindow(QMainWindow):
 
         lay.addStretch()
 
-        version = QLabel("Phase 3  v3.0")
+        # Logged-in user indicator
+        role_badge = "🛡 Admin" if self._user["role"] == "admin" else "👤 User"
+        user_lbl = QLabel(f"{role_badge}  {self._user['full_name']}")
+        user_lbl.setStyleSheet(
+            "color: #a8c8e8; background: transparent; font-size: 10px;")
+        lay.addWidget(user_lbl)
+
+        lay.addSpacing(10)
+
+        # Admin panel button (admin only)
+        if self._user["role"] == "admin":
+            admin_btn = QPushButton("⚙ Admin")
+            admin_btn.setFixedHeight(30)
+            admin_btn.setStyleSheet("""
+                QPushButton {
+                    background: #2c5f8a; color: white;
+                    border-radius: 4px; padding: 0 12px;
+                    font-weight: 700; font-size: 10px; border: none;
+                }
+                QPushButton:hover { background: #3a7ab0; }
+            """)
+            admin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            admin_btn.clicked.connect(self._open_admin_panel)
+            lay.addWidget(admin_btn)
+            lay.addSpacing(4)
+
+        version = QLabel("v1.1")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
         return frame
+
+    def _open_admin_panel(self):
+        from src.ui.admin_panel import AdminPanelDialog
+        from src.auth.auth_manager import log_action
+        log_action(self._user["username"], self._user["full_name"],
+                   "ADMIN_PANEL_OPENED", "")
+        dlg = AdminPanelDialog(self._user, parent=self)
+        dlg.exec()
 
     # ====================================================
     # TAB 1: Project Info
@@ -496,6 +972,14 @@ class MainWindow(QMainWindow):
         self.ipo_edit = QLineEdit()
         self.ipo_edit.setPlaceholderText("IPO Number (if any)")
         form.addRow("IPO No:", self.ipo_edit)
+
+        self.boq_number_edit = QLineEdit()
+        self.boq_number_edit.setPlaceholderText("e.g. BOQ-2025-001 (auto-generated if blank)")
+        form.addRow("BOQ Number:", self.boq_number_edit)
+
+        self.qtn_number_edit = QLineEdit()
+        self.qtn_number_edit.setPlaceholderText("e.g. QTN-2025-001 (auto-generated if blank)")
+        form.addRow("Quotation Number:", self.qtn_number_edit)
 
         self.date_edit = QLineEdit()
         self.date_edit.setText(date.today().strftime("%d-%m-%Y"))
@@ -583,6 +1067,40 @@ class MainWindow(QMainWindow):
         self._update_dwg_status()
 
         lay.addWidget(grp_dwg)
+
+        # PDF Import
+        grp_pdf = QGroupBox("Import from PDF Drawing")
+        grp_pdf.setStyleSheet(GROUP_STYLE)
+        pdf_lay = QVBoxLayout(grp_pdf)
+
+        pdf_row = QHBoxLayout()
+        self.pdf_path_edit = QLineEdit()
+        self.pdf_path_edit.setReadOnly(True)
+        self.pdf_path_edit.setPlaceholderText(
+            "No file selected — click Browse to load a PDF structural drawing")
+        pdf_row.addWidget(self.pdf_path_edit)
+
+        btn_pdf_browse = QPushButton("Browse…")
+        btn_pdf_browse.setStyleSheet(BTN_SECONDARY)
+        btn_pdf_browse.setFixedWidth(90)
+        btn_pdf_browse.clicked.connect(self._browse_pdf)
+        pdf_row.addWidget(btn_pdf_browse)
+
+        btn_pdf_import = QPushButton("Open & Review")
+        btn_pdf_import.setStyleSheet(BTN_STYLE)
+        btn_pdf_import.setFixedWidth(130)
+        btn_pdf_import.clicked.connect(self._import_pdf)
+        pdf_row.addWidget(btn_pdf_import)
+        pdf_lay.addLayout(pdf_row)
+
+        pdf_note = QLabel(
+            "ℹ  PDF drawings are shown as a visual preview. "
+            "Review the Schedule of Columns / Walls and enter elements manually.")
+        pdf_note.setWordWrap(True)
+        pdf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
+        pdf_lay.addWidget(pdf_note)
+
+        lay.addWidget(grp_pdf)
 
         # Quick text input
         grp = QGroupBox("Quick Text Input (e.g. '5 columns 300x450 height 3000')")
@@ -709,10 +1227,23 @@ class MainWindow(QMainWindow):
         f1.setSpacing(10)
 
         self.panel_height_combo = QComboBox()
-        self.panel_height_combo.addItems(["3200", "2470", "1228", "900", "600"])
+        self.panel_height_combo.addItems(["3200", "3000", "2470", "1228", "900", "600"])
         self.panel_height_combo.setCurrentText("3200")
         self.panel_height_combo.setMinimumWidth(160)
         f1.addRow("Panel Height (mm):", self.panel_height_combo)
+
+        self.casting_height_combo = QComboBox()
+        self.casting_height_combo.addItems(["3200", "3000", "2700", "2470", "2400", "2100", "1800", "1500"])
+        self.casting_height_combo.setCurrentText("3200")
+        self.casting_height_combo.setEditable(True)
+        self.casting_height_combo.setMinimumWidth(160)
+        _cast_lbl = QLabel("Casting Height (mm):")
+        _cast_lbl.setToolTip(
+            "Actual wall/column height for the concrete pour.\n"
+            "Used to compute accessories (wallers, tierods).\n"
+            "Panel Height = physical panel size being used."
+        )
+        f1.addRow(_cast_lbl, self.casting_height_combo)
 
         self.num_sets_spin = QSpinBox()
         self.num_sets_spin.setRange(1, 100)
@@ -912,11 +1443,19 @@ class MainWindow(QMainWindow):
         g = QVBoxLayout(grp)
         g.setSpacing(12)
 
-        btn_pdf = QPushButton("  Export PDF Quotation")
-        btn_pdf.setStyleSheet(BTN_STYLE)
-        btn_pdf.setMinimumHeight(38)
-        btn_pdf.clicked.connect(self._export_pdf)
-        g.addWidget(btn_pdf)
+        btn_boq_pdf = QPushButton("  Export BOQ PDF")
+        btn_boq_pdf.setStyleSheet(BTN_STYLE)
+        btn_boq_pdf.setMinimumHeight(38)
+        btn_boq_pdf.setToolTip("Export Bill of Quantities PDF (panel schedule, accessories, summary)")
+        btn_boq_pdf.clicked.connect(self._export_pdf)
+        g.addWidget(btn_boq_pdf)
+
+        btn_qtn_pdf = QPushButton("  Export Quotation PDF")
+        btn_qtn_pdf.setStyleSheet(BTN_STYLE)
+        btn_qtn_pdf.setMinimumHeight(38)
+        btn_qtn_pdf.setToolTip("Export Quotation PDF (pricing, T&C, Prepared By)")
+        btn_qtn_pdf.clicked.connect(self._export_quotation_pdf)
+        g.addWidget(btn_qtn_pdf)
 
         btn_excel = QPushButton("  Export Excel BOQ")
         btn_excel.setStyleSheet(BTN_SECONDARY)
@@ -1080,52 +1619,130 @@ class MainWindow(QMainWindow):
         if path:
             self.dwg_path_edit.setText(path)
 
+    def _browse_pdf(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open PDF Drawing", "",
+            "PDF Files (*.pdf);;All Files (*)"
+        )
+        if path:
+            self.pdf_path_edit.setText(path)
+
+    def _import_pdf(self):
+        path = self.pdf_path_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, "No File", "Please select a PDF file first.")
+            return
+
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            dlg = PDFImportDialog(path, self)
+        except Exception as ex:
+            self.unsetCursor()
+            QMessageBox.critical(self, "PDF Error", f"Cannot open PDF:\n{ex}")
+            return
+        finally:
+            self.unsetCursor()
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            elements = dlg.get_elements()
+            added = 0
+            for elem in elements:
+                existing_labels = [e.label for e in self._elements]
+                if elem.label in existing_labels:
+                    elem.label = elem.label + "_pdf"
+                self._elements.append(elem)
+                added += 1
+            self._refresh_element_table()
+            QMessageBox.information(
+                self, "Elements Added",
+                f"{added} element(s) imported from PDF.\n"
+                "Review them in the Elements tab, then click Compute BOQ."
+            )
+
     def _import_dwg(self):
         path = self.dwg_path_edit.text().strip()
         if not path:
             QMessageBox.warning(self, "No File", "Please select a DWG or DXF file first.")
             return
 
-        # Get casting height from config tab
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h    = float(self.panel_height_combo.currentText())
+        casting_h  = float(self.casting_height_combo.currentText()) \
+                     if hasattr(self, 'casting_height_combo') else panel_h
 
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        bboxes_raw      = []
-        all_polylines   = []
-        scale_used      = 1.0
-        dxf_render_path = ""
-        try:
-            if path.lower().endswith('.dxf'):
-                detected, bboxes_raw, all_polylines, scale_used = parse_dxf_full(path, panel_h)
-                dxf_render_path = path
-                err = None
-            else:
-                detected, bboxes_raw, all_polylines, scale_used, err, dxf_render_path = \
-                    parse_dwg_full(path, panel_h)
-        except Exception as ex:
-            detected, err = [], str(ex)
-        finally:
-            self.unsetCursor()
+        # Progress dialog — accurate timing hint for large drawings
+        from PyQt6.QtWidgets import QProgressDialog
+        progress = QProgressDialog(
+            "Parsing drawing, please wait…\n\n"
+            "Small drawings  (< 10 elements) :  ~30 sec\n"
+            "Medium drawings (10–30 elements): 1–2 min\n"
+            "Large drawings  (30+ elements)  : 3–6 min\n\n"
+            "The window will stay responsive during parsing.",
+            None, 0, 0, self
+        )
+        progress.setWindowTitle("Importing Drawing")
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.show()
 
-        if err:
-            QMessageBox.critical(self, "Import Error", err)
-            return
+        def _on_parse_done(result):
+            progress.close()
+            detected, bboxes_raw, all_polylines, scale_used, err, dxf_render_path = result
 
-        if not detected:
-            QMessageBox.information(
-                self, "No Elements Found",
-                "No structural elements were detected in the drawing.\n\n"
-                "Possible reasons:\n"
-                "• Drawing uses unsupported layer naming\n"
-                "• Dimensions are in unexpected units\n"
-                "• Elements drawn as LINES instead of polylines\n\n"
-                "Try adding elements manually or check the drawing."
-            )
-            return
+            if err:
+                QMessageBox.critical(self, "Import Error", err)
+                return
 
-        # Show review dialog
-        dlg = DWGReviewDialog(detected, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+            if not detected:
+                QMessageBox.information(
+                    self, "No Elements Found",
+                    "No structural elements were detected in the drawing.\n\n"
+                    "Possible reasons:\n"
+                    "• Drawing uses unsupported layer naming\n"
+                    "• Dimensions are in unexpected units\n"
+                    "• Elements drawn as LINES instead of polylines\n\n"
+                    "Try adding elements manually or check the drawing."
+                )
+                return
+
+            # ── Replace / Add / Cancel when project already has elements ──────
+            if self._elements:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Import Drawing")
+                msg.setIcon(QMessageBox.Icon.Question)
+                msg.setText(
+                    f"<b>{len(detected)} element(s) found in the drawing.</b><br><br>"
+                    f"This project currently has <b>{len(self._elements)} existing "
+                    f"element(s)</b>.<br>What would you like to do?"
+                )
+                replace_btn = msg.addButton(
+                    "Replace All  (recommended)", QMessageBox.ButtonRole.AcceptRole)
+                add_btn     = msg.addButton(
+                    "Add to Existing", QMessageBox.ButtonRole.AcceptRole)
+                cancel_btn  = msg.addButton(
+                    "Cancel", QMessageBox.ButtonRole.RejectRole)
+                msg.setDefaultButton(replace_btn)
+                msg.exec()
+
+                clicked = msg.clickedButton()
+                if clicked == cancel_btn:
+                    return
+                if clicked == replace_btn:
+                    # Full reset — clean slate for the new drawing
+                    self._elements.clear()
+                    self._boqs.clear()
+                    self._acc_boqs.clear()
+                    self._project        = ProjectBOQ()
+                    self._agg            = None
+                    self._acc_agg        = None
+                    self._pending_dxf_render_args = None
+                    self._pending_3d_render_args  = None
+                    self._refresh_element_table()
+
+            # ── Review dialog ─────────────────────────────────────────────────
+            dlg = DWGReviewDialog(detected, self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+
             confirmed = dlg.get_confirmed_elements()
             added = 0
             confirmed_bboxes = []
@@ -1134,44 +1751,49 @@ class MainWindow(QMainWindow):
                 if elem.label in existing_labels:
                     elem.label = elem.label + "_dwg"
                 self._elements.append(elem)
-                # Keep bbox aligned (bbox list may be shorter if DWG path used)
                 if i < len(bboxes_raw):
                     confirmed_bboxes.append(bboxes_raw[i])
                 added += 1
 
-            # Store bboxes and load drawing preview + 3D view
+            # ── Store drawing preview data — rendered lazily on tab click ─────
             if bboxes_raw:
-                self._element_bboxes = confirmed_bboxes
+                self._element_bboxes   = confirmed_bboxes
                 self._current_dxf_path = path
-                try:
-                    self.drawing_viewer.load_drawing(
-                        elements  = self._elements[-added:],
-                        bboxes    = confirmed_bboxes,
-                        polylines = all_polylines,
-                        scale     = scale_used,
-                        title     = path,
-                        dxf_path  = dxf_render_path,
-                    )
-                except Exception:
-                    pass  # Viewer is optional — don't block import
-                try:
-                    self.view_3d.load_elements(
-                        self._elements[-added:],
-                        bboxes=confirmed_bboxes,
-                        scale=scale_used,
-                    )
-                except Exception:
-                    pass
-                # Auto-switch to Drawing Preview tab
-                self.tabs.setCurrentIndex(2)
+                self._pending_dxf_render_args = dict(
+                    elements  = list(self._elements[-added:]),
+                    bboxes    = confirmed_bboxes,
+                    polylines = all_polylines,
+                    scale     = scale_used,
+                    title     = path,
+                    dxf_path  = dxf_render_path,
+                )
+                self._pending_3d_render_args = dict(
+                    elements = list(self._elements[-added:]),
+                    bboxes   = confirmed_bboxes,
+                    scale    = scale_used,
+                )
 
             self._refresh_element_table()
+            # Switch to Elements tab so user sees results immediately
+            self.tabs.setCurrentIndex(1)
+
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "DXF_IMPORT",
+                 f"{added} elements from: {Path(path).name}")
+
             QMessageBox.information(
                 self, "Import Complete",
-                f"{added} element(s) imported from drawing.\n"
-                f"Drawing preview loaded in the 'Drawing Preview' tab.\n"
-                f"Please review dimensions before running optimization."
+                f"✓  {added} element(s) imported from drawing.\n\n"
+                f"Drawing Preview and 3D View tabs will render\n"
+                f"when you click them (keeps UI fast).\n\n"
+                f"Next: go to Configuration tab → set panel height → Compute BOQ."
             )
+
+        # Start background worker
+        self._dwg_worker = _DXFParserWorker(path, panel_h, casting_h, parent=self)
+        self._dwg_worker.finished.connect(_on_parse_done)
+        self._dwg_worker.start()
 
     def _run_optimization(self):
         if not self._elements:
@@ -1215,6 +1837,14 @@ class MainWindow(QMainWindow):
             acc = calculate_accessories(elem, boq, panel_h)
             self._acc_boqs.append(acc)
         self._acc_agg = aggregate_accessories(self._acc_boqs, self.num_sets_spin.value())
+
+        from src.auth.auth_manager import log_action as _log
+        _log(self._user["username"], self._user["full_name"],
+             "BOQ_COMPUTED",
+             f"Project: {self._project.project_name} | "
+             f"{len(self._boqs)} elements | "
+             f"{self._agg.get('total_area_sqm', 0):.1f} sqm | "
+             f"Panel: {panel_h:.0f}mm")
 
         self._refresh_boq_tables()
 
@@ -1337,18 +1967,53 @@ class MainWindow(QMainWindow):
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save PDF Quotation", "", "PDF Files (*.pdf)")
+            self, "Save BOQ PDF", "", "PDF Files (*.pdf)")
         if not path:
             return
 
         try:
-            panel_h = float(self.panel_height_combo.currentText())
-            out = generate_pdf(self._project, panel_h, path, acc_agg=self._acc_agg)
-            self.export_log.append(f"✓ PDF saved: {out}")
+            boq_no = self.boq_number_edit.text().strip() or None
+            out = generate_boq_pdf(self._project, path,
+                                   acc_agg=self._acc_agg, boq_number=boq_no)
+            self.export_log.append(f"✓ BOQ PDF saved: {out}")
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "PDF_EXPORTED", f"BOQ PDF: {Path(path).name}")
             QMessageBox.information(self, "Export Success",
-                                    f"PDF saved successfully:\n{path}")
+                                    f"BOQ PDF saved successfully:\n{path}")
         except Exception as ex:
-            self.export_log.append(f"✗ PDF error: {ex}")
+            self.export_log.append(f"✗ BOQ PDF error: {ex}")
+            QMessageBox.critical(self, "Export Error", str(ex))
+
+    def _export_quotation_pdf(self):
+        if not self._project or not self._boqs:
+            QMessageBox.warning(self, "No Data",
+                                "Please run optimization first (Configuration tab).")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Quotation PDF", "", "PDF Files (*.pdf)")
+        if not path:
+            return
+
+        try:
+            qtn_no = self.qtn_number_edit.text().strip() or None
+            out = generate_quotation_pdf(
+                self._project, path,
+                acc_agg=self._acc_agg,
+                qtn_number=qtn_no,
+                price_per_sqm=self._project.panel_rate_per_sqm,
+                freight=self._project.freight_amount,
+                gst_rate=0.18 if self._project.gst_enabled else 0.0,
+            )
+            self.export_log.append(f"✓ Quotation PDF saved: {out}")
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "PDF_EXPORTED", f"Quotation PDF: {Path(path).name}")
+            QMessageBox.information(self, "Export Success",
+                                    f"Quotation PDF saved successfully:\n{path}")
+        except Exception as ex:
+            self.export_log.append(f"✗ Quotation PDF error: {ex}")
             QMessageBox.critical(self, "Export Error", str(ex))
 
     def _export_excel(self):
@@ -1363,14 +2028,22 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            boq_no = self.boq_number_edit.text().strip() or None
+            qtn_no = self.qtn_number_edit.text().strip() or None
             out = generate_excel_boq(
                 self._project,
                 path,
                 price_per_sqm=self._project.panel_rate_per_sqm,
                 freight_amount=self._project.freight_amount,
                 gst_rate=0.18 if self._project.gst_enabled else 0.0,
+                acc_agg=self._acc_agg,
+                boq_number=boq_no,
+                qtn_number=qtn_no,
             )
             self.export_log.append(f"✓ Excel saved: {out}")
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "EXCEL_EXPORTED", f"Excel BOQ: {Path(path).name}")
             QMessageBox.information(self, "Export Success",
                                     f"Excel BOQ saved successfully:\n{path}")
         except Exception as ex:
