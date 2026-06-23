@@ -19,6 +19,7 @@ from src.auth.auth_manager import (
     reset_password, get_audit_logs, log_action,
     export_logs_csv, get_daily_log_files,
     get_db_location, set_central_db_path,
+    set_server_url, ping_server,
 )
 
 _NOVA_BLUE   = "#1a3a5c"
@@ -663,16 +664,23 @@ class AdminPanelDialog(QDialog):
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(16)
 
-        # ── Current status ────────────────────────────────────────────────────
-        status_grp = QGroupBox("Current Database Location")
-        status_grp.setStyleSheet(f"""
+        _grp_css = f"""
             QGroupBox {{
                 font-weight:700; color:{_NOVA_BLUE};
                 border:1.5px solid {_LIGHT}; border-radius:8px;
                 margin-top:8px; padding:14px 16px;
             }}
             QGroupBox::title {{ subcontrol-origin:margin; left:10px; }}
-        """)
+        """
+        _edit_css = """
+            QLineEdit { border:1.5px solid #c8d8e8; border-radius:5px;
+                        padding:6px 10px; font-family:Courier New; font-size:9pt; }
+            QLineEdit:focus { border-color:#2c5f8a; }
+        """
+
+        # ── Current status ────────────────────────────────────────────────────
+        status_grp = QGroupBox("Current Connection Status")
+        status_grp.setStyleSheet(_grp_css)
         sg = QVBoxLayout(status_grp)
 
         self._db_status_lbl = QLabel()
@@ -692,23 +700,79 @@ class AdminPanelDialog(QDialog):
 
         lay.addWidget(status_grp)
 
-        # ── Set central path ──────────────────────────────────────────────────
-        cfg_grp = QGroupBox("Set Central Database Path  (shared folder on admin's machine)")
-        cfg_grp.setStyleSheet(status_grp.styleSheet())
+        # ── RECOMMENDED: HTTP Server URL ──────────────────────────────────────
+        srv_grp = QGroupBox("Central Auth Server  ★ Recommended — no Windows credentials needed")
+        srv_grp.setStyleSheet(_grp_css)
+        svl = QVBoxLayout(srv_grp)
+
+        srv_how = QLabel(
+            "<b>How to use:</b><br>"
+            "1. On the <b>admin machine</b> — double-click <code>start_server.bat</code> "
+            "(keep the window open while team is working)<br>"
+            "2. Note the IP address printed in that window, e.g. <code>192.168.1.101</code><br>"
+            "3. On <b>each employee machine</b> — enter the URL below and click "
+            "<b>Save &amp; Apply</b><br><br>"
+            "Example: <code>http://192.168.1.101:8765</code>"
+        )
+        srv_how.setWordWrap(True)
+        srv_how.setStyleSheet("font-size:9pt; color:#333; padding:4px;")
+        srv_how.setTextFormat(Qt.TextFormat.RichText)
+        svl.addWidget(srv_how)
+        svl.addSpacing(8)
+
+        srv_row = QHBoxLayout()
+        self._server_url_edit = QLineEdit()
+        self._server_url_edit.setPlaceholderText(
+            "e.g. http://192.168.1.101:8765   (blank = not using server mode)")
+        self._server_url_edit.setStyleSheet(_edit_css)
+        srv_row.addWidget(self._server_url_edit)
+        svl.addLayout(srv_row)
+        svl.addSpacing(8)
+
+        srv_btn_row = QHBoxLayout()
+        srv_save_btn = QPushButton("Save & Apply")
+        srv_save_btn.setStyleSheet(_BTN)
+        srv_save_btn.setFixedWidth(130)
+        srv_save_btn.clicked.connect(self._save_server_url)
+        srv_btn_row.addWidget(srv_save_btn)
+
+        srv_test_btn = QPushButton("Test Connection")
+        srv_test_btn.setStyleSheet(_BTN)
+        srv_test_btn.setFixedWidth(140)
+        srv_test_btn.clicked.connect(self._test_server_url)
+        srv_btn_row.addWidget(srv_test_btn)
+
+        srv_clear_btn = QPushButton("Clear / Use Local")
+        srv_clear_btn.setStyleSheet(_BTN_RED)
+        srv_clear_btn.setFixedWidth(140)
+        srv_clear_btn.clicked.connect(self._clear_server_url)
+        srv_btn_row.addWidget(srv_clear_btn)
+        srv_btn_row.addStretch()
+        svl.addLayout(srv_btn_row)
+
+        self._srv_msg_lbl = QLabel("")
+        self._srv_msg_lbl.setStyleSheet("font-size:9pt;")
+        self._srv_msg_lbl.setWordWrap(True)
+        svl.addWidget(self._srv_msg_lbl)
+        lay.addWidget(srv_grp)
+
+        # ── LEGACY: Windows file-share path ──────────────────────────────────
+        cfg_grp = QGroupBox("Legacy — Windows File Share  (requires Windows network credentials)")
+        cfg_grp.setStyleSheet(_grp_css)
         cg = QVBoxLayout(cfg_grp)
 
         how_lbl = QLabel(
-            "<b>How to use:</b><br>"
+            "<b>Only use if the HTTP server above is not available.</b><br>"
             "1. On <b>admin's machine</b> — share a folder (e.g. <code>C:\\NovoFormDB\\</code>)<br>"
             "2. On <b>each employee machine</b> — enter the UNC or mapped-drive path below<br>"
-            "3. Click <b>Save &amp; Apply</b> — app will use shared DB from next login<br><br>"
+            "3. Click <b>Save &amp; Apply</b><br><br>"
             "Example paths:<br>"
             "&nbsp;&nbsp;Windows UNC&nbsp;: <code>\\\\ADMIN-PC\\NovoFormDB\\novoform_auth.db</code><br>"
             "&nbsp;&nbsp;Mapped drive : <code>Z:\\novoform_auth.db</code><br>"
-            "&nbsp;&nbsp;Leave blank to use local DB (admin's own machine)"
+            "&nbsp;&nbsp;Leave blank to use local DB"
         )
         how_lbl.setWordWrap(True)
-        how_lbl.setStyleSheet("font-size:9pt; color:#333; padding:4px;")
+        how_lbl.setStyleSheet("font-size:9pt; color:#666; padding:4px;")
         how_lbl.setTextFormat(Qt.TextFormat.RichText)
         cg.addWidget(how_lbl)
         cg.addSpacing(8)
@@ -717,11 +781,7 @@ class AdminPanelDialog(QDialog):
         self._central_path_edit = QLineEdit()
         self._central_path_edit.setPlaceholderText(
             r"e.g. \\ADMIN-PC\NovoFormDB\novoform_auth.db  (blank = use local)")
-        self._central_path_edit.setStyleSheet("""
-            QLineEdit { border:1.5px solid #c8d8e8; border-radius:5px;
-                        padding:6px 10px; font-family:Courier New; font-size:9pt; }
-            QLineEdit:focus { border-color:#2c5f8a; }
-        """)
+        self._central_path_edit.setStyleSheet(_edit_css)
         path_row.addWidget(self._central_path_edit)
 
         browse_btn = QPushButton("Browse…")
@@ -758,20 +818,6 @@ class AdminPanelDialog(QDialog):
         self._db_msg_lbl.setWordWrap(True)
         cg.addWidget(self._db_msg_lbl)
         lay.addWidget(cfg_grp)
-
-        # ── Info box ──────────────────────────────────────────────────────────
-        info = QLabel(
-            "ℹ  <b>Admin machine setup:</b> Share a folder and place (or let NovoForm create) "
-            "the DB file there. No server required — all machines write directly to the shared file.<br>"
-            "ℹ  <b>Works best on a stable LAN.</b> If the shared folder is unreachable, "
-            "login will fail. Use 'Use Local DB' to fall back to standalone mode."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet(
-            f"background:{_LIGHT}; color:{_NOVA_BLUE}; border-radius:6px; "
-            f"padding:10px 14px; font-size:9pt;")
-        info.setTextFormat(Qt.TextFormat.RichText)
-        lay.addWidget(info)
         lay.addStretch()
 
         self._refresh_db_status()
@@ -779,21 +825,92 @@ class AdminPanelDialog(QDialog):
 
     def _refresh_db_status(self):
         info = get_db_location()
-        self._db_path_lbl.setText(info["path"])
-        if info["is_central"]:
-            self._db_status_lbl.setText("🔗  Mode: <b>Central shared database</b>")
+
+        mode = info.get("mode", "local")
+        if mode == "server":
+            self._db_status_lbl.setText("🌐  Mode: <b>Central HTTP Server</b>")
             self._db_status_lbl.setStyleSheet(f"font-size:10pt; color:{_GREEN};")
+            self._db_path_lbl.setText(info["path"])
+            if info.get("reachable", False):
+                self._db_reach_lbl.setText("✅  Server is reachable")
+                self._db_reach_lbl.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+            else:
+                self._db_reach_lbl.setText(
+                    "⚠  Server not reachable — app will fall back to local DB")
+                self._db_reach_lbl.setStyleSheet(f"color:#e67e00; font-size:9pt;")
+        elif info.get("is_central", False):
+            self._db_status_lbl.setText("🔗  Mode: <b>Central shared database (file share)</b>")
+            self._db_status_lbl.setStyleSheet(f"font-size:10pt; color:{_GREEN};")
+            self._db_path_lbl.setText(info["path"])
+            if info.get("reachable", False):
+                self._db_reach_lbl.setText("✅  Path is reachable")
+                self._db_reach_lbl.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+            else:
+                self._db_reach_lbl.setText(
+                    "❌  Path NOT reachable — check network / folder sharing")
+                self._db_reach_lbl.setStyleSheet(f"color:{_RED}; font-size:9pt;")
         else:
             self._db_status_lbl.setText("💻  Mode: <b>Local database (this machine only)</b>")
             self._db_status_lbl.setStyleSheet(f"font-size:10pt; color:{_NOVA_BLUE};")
-        if info["reachable"]:
-            self._db_reach_lbl.setText("✅  Path is reachable")
+            self._db_path_lbl.setText(info["path"])
+            self._db_reach_lbl.setText("✅  Local DB always reachable")
             self._db_reach_lbl.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+
+        # Populate server URL field
+        if hasattr(self, "_server_url_edit"):
+            srv_url = info["path"] if mode == "server" else ""
+            self._server_url_edit.setText(srv_url)
+
+        # Populate file-share path field
+        if hasattr(self, "_central_path_edit"):
+            self._central_path_edit.setText(
+                info["path"] if info.get("is_central") and mode != "server" else "")
+
+    # ── Server URL methods ────────────────────────────────────────────────────
+
+    def _save_server_url(self):
+        url = self._server_url_edit.text().strip()
+        ok, msg = set_server_url(url)
+        if ok:
+            self._srv_msg_lbl.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+            log_action(self._user["username"], self._user["full_name"],
+                       "SERVER_URL_CHANGED",
+                       f"server_url set to: '{url or '(cleared)'}'")
         else:
-            self._db_reach_lbl.setText("❌  Path NOT reachable — check network / folder sharing")
-            self._db_reach_lbl.setStyleSheet(f"color:{_RED}; font-size:9pt;")
-        self._central_path_edit.setText(
-            info["path"] if info["is_central"] else "")
+            self._srv_msg_lbl.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+        self._srv_msg_lbl.setText(msg)
+        self._refresh_db_status()
+
+    def _test_server_url(self):
+        url = self._server_url_edit.text().strip()
+        if not url:
+            self._srv_msg_lbl.setStyleSheet(f"color:{_NOVA_BLUE}; font-size:9pt;")
+            self._srv_msg_lbl.setText("ℹ  No URL entered. Enter e.g. http://192.168.1.101:8765")
+            return
+        self._srv_msg_lbl.setStyleSheet(f"color:{_NOVA_BLUE}; font-size:9pt;")
+        self._srv_msg_lbl.setText("⏳  Testing connection…")
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        # Temporarily save URL so ping_server() picks it up, then restore old value
+        old_url = self._server_url_edit.text()  # same as url — kept for clarity
+        set_server_url(url)
+        ok, detail = ping_server()
+        if ok:
+            self._srv_msg_lbl.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+            self._srv_msg_lbl.setText(f"✅  Connected — {detail}")
+        else:
+            self._srv_msg_lbl.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+            self._srv_msg_lbl.setText(f"❌  Cannot reach server: {detail}")
+
+    def _clear_server_url(self):
+        ok = QMessageBox.question(
+            self, "Clear Server URL",
+            "Remove the server URL?\n\nThis machine will use local DB (or file-share path if set).",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        self._server_url_edit.clear()
+        self._save_server_url()
 
     def _browse_db_path(self):
         path, _ = QFileDialog.getSaveFileName(

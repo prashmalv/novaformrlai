@@ -1,4 +1,5 @@
 {
   "anthropic_api_key": "",
-  "central_db_path": ""
+  "central_db_path": "",
+  "server_url": ""
 }

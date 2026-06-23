@@ -1,16 +1,21 @@
 """
 NovoForm — Authentication & Audit Manager
-SQLite-backed user store + audit log.  No external dependencies.
+SQLite-backed user store + audit log.
 
-DB path resolution (in priority order):
-  1. config/api_config.json → "central_db_path"  (set by admin to a shared LAN folder)
-  2. data/novoform_auth.db  (local fallback / admin's own machine)
+Mode resolution (in priority order):
+  1. config/api_config.json → "server_url"      (HTTP server mode — RECOMMENDED)
+     e.g. http://192.168.1.101:8765
+     Admin machine runs server.py / start_server.bat
+  2. config/api_config.json → "central_db_path" (legacy UNC file share — needs creds)
+  3. data/novoform_auth.db                       (local only — single machine)
 
 Text logs : <OS AppData>/NovoForm/logs/<username>/YYYY-MM-DD.txt  (always local per machine)
 
-Setting "central_db_path" on every employee machine makes the admin the central authority:
-  Windows UNC : \\\\ADMIN-PC\\NovoFormDB\\novoform_auth.db
-  Mapped drive: Z:\\novoform_auth.db
+HTTP server mode:
+  - No Windows credential prompts
+  - Works across WiFi and LAN
+  - Admin sees all machines' users and audit logs in one place
+  - Falls back to local DB if server unreachable
 """
 import csv
 import hashlib
@@ -29,6 +34,78 @@ _LOCAL_DB   = _APP_ROOT / "data" / "novoform_auth.db"
 _API_CONFIG = _APP_ROOT / "config" / "api_config.json"
 
 
+# ── Server mode helpers ────────────────────────────────────────────────────────
+
+def _get_server_url() -> str | None:
+    """Return HTTP server URL if configured, else None."""
+    try:
+        if _API_CONFIG.exists():
+            cfg = json.loads(_API_CONFIG.read_text())
+            url = cfg.get("server_url", "").strip().rstrip("/")
+            return url if url else None
+    except Exception:
+        pass
+    return None
+
+
+def _srv(method: str, endpoint: str, payload: dict = None,
+         admin_user: str = "", admin_pass: str = "",
+         timeout: float = 5.0) -> dict | list | None:
+    """
+    HTTP call to auth server. Returns parsed JSON or None on any failure.
+    Uses stdlib urllib so no extra dependencies needed on client machines.
+    """
+    base = _get_server_url()
+    if not base:
+        return None
+    import urllib.request, urllib.error
+    url = f"{base}{endpoint}"
+    data = json.dumps(payload).encode() if payload else None
+    headers = {"Content-Type": "application/json"}
+    if admin_user:
+        headers["x-admin-user"] = admin_user
+        headers["x-admin-pass"] = admin_pass
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return None
+
+
+def ping_server() -> tuple[bool, str]:
+    """Check if server is reachable. Returns (ok, status_message)."""
+    url = _get_server_url()
+    if not url:
+        return False, "No server URL configured."
+    result = _srv("GET", "/health", timeout=3.0)
+    if result and result.get("status") == "ok":
+        return True, f"Connected  ·  NovoForm Server v{result.get('version', '?')}"
+    return False, f"Server not reachable at {url}"
+
+
+def set_server_url(url: str) -> tuple[bool, str]:
+    """Save server_url to api_config.json. Pass empty string to disable."""
+    url = url.strip().rstrip("/")
+    try:
+        _API_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        existing = {}
+        if _API_CONFIG.exists():
+            try:
+                existing = json.loads(_API_CONFIG.read_text())
+            except Exception:
+                pass
+        existing["server_url"] = url
+        _API_CONFIG.write_text(json.dumps(existing, indent=2))
+        if url:
+            return True, "Server URL saved. Restart the app to apply."
+        return True, "Reverted to local / file-share mode."
+    except Exception as e:
+        return False, str(e)
+
+
+# ── Local DB path (used when server mode not active) ──────────────────────────
+
 def _get_db_path() -> Path:
     """Return central DB path if configured, else local path."""
     try:
@@ -43,14 +120,27 @@ def _get_db_path() -> Path:
 
 
 def get_db_location() -> dict:
-    """Return info about the current DB path (used by admin panel UI)."""
+    """Return info about the current connection mode (used by admin panel UI)."""
+    srv_url = _get_server_url()
+    if srv_url:
+        ok, msg = ping_server()
+        return {
+            "mode":       "server",
+            "path":       srv_url,
+            "is_central": True,
+            "reachable":  ok,
+            "label":      f"HTTP Server: {srv_url}",
+            "status_msg": msg,
+        }
     path = _get_db_path()
     is_central = path != _LOCAL_DB
     return {
+        "mode":       "central_db" if is_central else "local",
         "path":       str(path),
         "is_central": is_central,
         "reachable":  path.exists() or path.parent.exists(),
-        "label":      "Central (shared)" if is_central else "Local (this machine only)",
+        "label":      "Central DB (file share)" if is_central else "Local (this machine only)",
+        "status_msg": "",
     }
 
 
@@ -208,7 +298,22 @@ def initialize_db() -> None:
 # ── authentication ────────────────────────────────────────────────────────────
 
 def authenticate(username: str, password: str) -> dict | None:
-    """Returns user dict {id, username, full_name, role} on success, else None."""
+    """
+    Returns user dict {id, username, full_name, role} on success, else None.
+    In server mode: calls /auth/login (server also logs the login event).
+    Falls back to local DB if server unreachable.
+    """
+    hostname, ip = _get_host_ip()
+    srv_result = _srv("POST", "/auth/login", {
+        "username":   username.strip().lower(),
+        "password":   password,
+        "hostname":   hostname,
+        "ip_address": ip,
+    })
+    if srv_result is not None:
+        return srv_result  # server authenticated and logged the event
+
+    # ── Local DB fallback ──────────────────────────────────────────────────────
     con = _conn()
     cur = con.cursor()
     cur.execute(
@@ -234,13 +339,23 @@ def authenticate(username: str, password: str) -> dict | None:
 # ── user management ───────────────────────────────────────────────────────────
 
 def add_user(username: str, full_name: str, password: str,
-             role: str, created_by: str) -> tuple[bool, str]:
+             role: str, created_by: str,
+             _admin_user: str = "", _admin_pass: str = "") -> tuple[bool, str]:
     uname = username.strip().lower()
     if not uname or not password or not full_name:
         return False, "Username, full name and password are required."
     if role not in ("admin", "user"):
         return False, "Role must be 'admin' or 'user'."
 
+    # Server mode: admin credentials required for the HTTP call
+    result = _srv("POST", "/users", {
+        "username": uname, "full_name": full_name.strip(),
+        "password": password, "role": role,
+    }, admin_user=_admin_user, admin_pass=_admin_pass)
+    if result is not None:
+        return True, result.get("message", f"User '{uname}' created.")
+
+    # Local fallback
     salt = _new_salt()
     try:
         con = _conn()
@@ -259,7 +374,13 @@ def add_user(username: str, full_name: str, password: str,
         return False, str(e)
 
 
-def deactivate_user(username: str) -> tuple[bool, str]:
+def deactivate_user(username: str,
+                    _admin_user: str = "", _admin_pass: str = "") -> tuple[bool, str]:
+    result = _srv("PUT", f"/users/{username}/deactivate",
+                  admin_user=_admin_user, admin_pass=_admin_pass)
+    if result is not None:
+        return True, result.get("message", f"User '{username}' deactivated.")
+
     con = _conn()
     cur = con.cursor()
     cur.execute("UPDATE users SET active=0 WHERE username=? AND role!='admin'",
@@ -272,7 +393,13 @@ def deactivate_user(username: str) -> tuple[bool, str]:
     return True, f"User '{username}' deactivated."
 
 
-def reactivate_user(username: str) -> tuple[bool, str]:
+def reactivate_user(username: str,
+                    _admin_user: str = "", _admin_pass: str = "") -> tuple[bool, str]:
+    result = _srv("PUT", f"/users/{username}/reactivate",
+                  admin_user=_admin_user, admin_pass=_admin_pass)
+    if result is not None:
+        return True, result.get("message", f"User '{username}' reactivated.")
+
     con = _conn()
     cur = con.cursor()
     cur.execute("UPDATE users SET active=1 WHERE username=?", (username,))
@@ -284,9 +411,17 @@ def reactivate_user(username: str) -> tuple[bool, str]:
     return True, f"User '{username}' reactivated."
 
 
-def reset_password(username: str, new_password: str, by_whom: str) -> tuple[bool, str]:
+def reset_password(username: str, new_password: str, by_whom: str,
+                   _admin_user: str = "", _admin_pass: str = "") -> tuple[bool, str]:
     if not new_password:
         return False, "Password cannot be empty."
+
+    result = _srv("PUT", f"/users/{username}/password",
+                  {"new_password": new_password, "by_whom": by_whom},
+                  admin_user=_admin_user, admin_pass=_admin_pass)
+    if result is not None:
+        return True, result.get("message", f"Password reset for '{username}'.")
+
     salt = _new_salt()
     con = _conn()
     cur = con.cursor()
@@ -304,7 +439,12 @@ def reset_password(username: str, new_password: str, by_whom: str) -> tuple[bool
     return True, f"Password reset for '{username}'."
 
 
-def get_all_users() -> list[dict]:
+def get_all_users(_admin_user: str = "", _admin_pass: str = "") -> list[dict]:
+    result = _srv("GET", "/users",
+                  admin_user=_admin_user, admin_pass=_admin_pass)
+    if result is not None:
+        return result
+
     con = _conn()
     cur = con.cursor()
     cur.execute(
@@ -323,7 +463,20 @@ def log_action(username: str, full_name: str,
     hostname, ip = _get_host_ip()
     ts = _now()
 
-    # 1. Write to SQLite
+    # 1. Always write local daily text log (offline audit trail)
+    _write_daily_log(ts, username, full_name, action, details, hostname, ip)
+
+    # 2. Server mode: send to central server (short timeout — non-blocking feel)
+    srv_result = _srv("POST", "/audit", {
+        "username":  username,
+        "full_name": full_name,
+        "action":    action,
+        "details":   details,
+    }, timeout=1.5)
+    if srv_result is not None:
+        return  # server wrote it centrally
+
+    # 3. Fallback: write to local SQLite
     try:
         con = _conn()
         con.execute(
@@ -336,9 +489,6 @@ def log_action(username: str, full_name: str,
         con.close()
     except Exception:
         pass   # never crash the app on audit failure
-
-    # 2. Append to per-user daily text log in OS AppData (hidden from regular users)
-    _write_daily_log(ts, username, full_name, action, details, hostname, ip)
 
 
 def _write_daily_log(ts: str, username: str, full_name: str,
@@ -368,8 +518,18 @@ def _write_daily_log(ts: str, username: str, full_name: str,
 
 # ── audit log — queries ───────────────────────────────────────────────────────
 
-def get_audit_logs(limit: int = 1000,
-                   username_filter: str = "") -> list[dict]:
+def get_audit_logs(limit: int = 1000, username_filter: str = "",
+                   _admin_user: str = "", _admin_pass: str = "") -> list[dict]:
+    # Server mode: fetch from central server
+    endpoint = f"/audit?limit={limit}"
+    result = _srv("GET", endpoint,
+                  admin_user=_admin_user, admin_pass=_admin_pass)
+    if result is not None:
+        if username_filter:
+            result = [r for r in result if r.get("username") == username_filter]
+        return result
+
+    # Local fallback
     con = _conn()
     cur = con.cursor()
     if username_filter:
