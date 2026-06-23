@@ -580,6 +580,8 @@ class DXFArrangeDialog(QDialog):
         self._update_pos_label()
 
     def _update_pos_label(self):
+        if not hasattr(self, '_pos_lbl'):
+            return
         rows = self.table.selectionModel().selectedRows()
         if rows:
             self._pos_lbl.setText(f"Selected: row {rows[0].row() + 1} of {len(self._pairs)}")
