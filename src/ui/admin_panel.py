@@ -18,6 +18,7 @@ from src.auth.auth_manager import (
     get_all_users, add_user, deactivate_user, reactivate_user,
     reset_password, get_audit_logs, log_action,
     export_logs_csv, get_daily_log_files,
+    get_db_location, set_central_db_path,
 )
 
 _NOVA_BLUE   = "#1a3a5c"
@@ -115,9 +116,10 @@ class AdminPanelDialog(QDialog):
             }}
             QTabWidget::pane {{ border:none; }}
         """)
-        tabs.addTab(self._build_users_tab(),     "👥  Team Members")
-        tabs.addTab(self._build_audit_tab(),     "📋  Audit Log")
-        tabs.addTab(self._build_daily_logs_tab(),"📁  Daily Log Files")
+        tabs.addTab(self._build_users_tab(),       "👥  Team Members")
+        tabs.addTab(self._build_audit_tab(),       "📋  Audit Log")
+        tabs.addTab(self._build_daily_logs_tab(),  "📁  Daily Log Files")
+        tabs.addTab(self._build_network_tab(),     "🔗  Database Settings")
         root.addWidget(tabs)
 
     # ── Tab 1: Team Members ───────────────────────────────────────────────────
@@ -652,3 +654,196 @@ class AdminPanelDialog(QDialog):
             QMessageBox.information(self, "Saved", f"Log file saved to:\n{dst}")
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
+
+    # ── Tab 4: Database / Network Settings ───────────────────────────────────
+
+    def _build_network_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(16)
+
+        # ── Current status ────────────────────────────────────────────────────
+        status_grp = QGroupBox("Current Database Location")
+        status_grp.setStyleSheet(f"""
+            QGroupBox {{
+                font-weight:700; color:{_NOVA_BLUE};
+                border:1.5px solid {_LIGHT}; border-radius:8px;
+                margin-top:8px; padding:14px 16px;
+            }}
+            QGroupBox::title {{ subcontrol-origin:margin; left:10px; }}
+        """)
+        sg = QVBoxLayout(status_grp)
+
+        self._db_status_lbl = QLabel()
+        self._db_status_lbl.setWordWrap(True)
+        self._db_status_lbl.setStyleSheet("font-size:10pt;")
+        sg.addWidget(self._db_status_lbl)
+
+        self._db_path_lbl = QLabel()
+        self._db_path_lbl.setWordWrap(True)
+        self._db_path_lbl.setStyleSheet(
+            f"font-family:Courier New; font-size:9pt; color:{_NOVA_BLUE}; "
+            f"background:#f0f4f8; padding:6px; border-radius:4px;")
+        sg.addWidget(self._db_path_lbl)
+
+        self._db_reach_lbl = QLabel()
+        sg.addWidget(self._db_reach_lbl)
+
+        lay.addWidget(status_grp)
+
+        # ── Set central path ──────────────────────────────────────────────────
+        cfg_grp = QGroupBox("Set Central Database Path  (shared folder on admin's machine)")
+        cfg_grp.setStyleSheet(status_grp.styleSheet())
+        cg = QVBoxLayout(cfg_grp)
+
+        how_lbl = QLabel(
+            "<b>How to use:</b><br>"
+            "1. On <b>admin's machine</b> — share a folder (e.g. <code>C:\\NovoFormDB\\</code>)<br>"
+            "2. On <b>each employee machine</b> — enter the UNC or mapped-drive path below<br>"
+            "3. Click <b>Save &amp; Apply</b> — app will use shared DB from next login<br><br>"
+            "Example paths:<br>"
+            "&nbsp;&nbsp;Windows UNC&nbsp;: <code>\\\\ADMIN-PC\\NovoFormDB\\novoform_auth.db</code><br>"
+            "&nbsp;&nbsp;Mapped drive : <code>Z:\\novoform_auth.db</code><br>"
+            "&nbsp;&nbsp;Leave blank to use local DB (admin's own machine)"
+        )
+        how_lbl.setWordWrap(True)
+        how_lbl.setStyleSheet("font-size:9pt; color:#333; padding:4px;")
+        how_lbl.setTextFormat(Qt.TextFormat.RichText)
+        cg.addWidget(how_lbl)
+        cg.addSpacing(8)
+
+        path_row = QHBoxLayout()
+        self._central_path_edit = QLineEdit()
+        self._central_path_edit.setPlaceholderText(
+            r"e.g. \\ADMIN-PC\NovoFormDB\novoform_auth.db  (blank = use local)")
+        self._central_path_edit.setStyleSheet("""
+            QLineEdit { border:1.5px solid #c8d8e8; border-radius:5px;
+                        padding:6px 10px; font-family:Courier New; font-size:9pt; }
+            QLineEdit:focus { border-color:#2c5f8a; }
+        """)
+        path_row.addWidget(self._central_path_edit)
+
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setStyleSheet(_BTN)
+        browse_btn.setFixedWidth(90)
+        browse_btn.clicked.connect(self._browse_db_path)
+        path_row.addWidget(browse_btn)
+        cg.addLayout(path_row)
+        cg.addSpacing(8)
+
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("Save & Apply")
+        save_btn.setStyleSheet(_BTN)
+        save_btn.setFixedWidth(130)
+        save_btn.clicked.connect(self._save_db_path)
+        btn_row.addWidget(save_btn)
+
+        test_btn = QPushButton("Test Connection")
+        test_btn.setStyleSheet(_BTN)
+        test_btn.setFixedWidth(140)
+        test_btn.clicked.connect(self._test_db_path)
+        btn_row.addWidget(test_btn)
+
+        reset_btn = QPushButton("Use Local DB")
+        reset_btn.setStyleSheet(_BTN_RED)
+        reset_btn.setFixedWidth(120)
+        reset_btn.clicked.connect(self._reset_to_local_db)
+        btn_row.addWidget(reset_btn)
+        btn_row.addStretch()
+        cg.addLayout(btn_row)
+
+        self._db_msg_lbl = QLabel("")
+        self._db_msg_lbl.setStyleSheet("font-size:9pt;")
+        self._db_msg_lbl.setWordWrap(True)
+        cg.addWidget(self._db_msg_lbl)
+        lay.addWidget(cfg_grp)
+
+        # ── Info box ──────────────────────────────────────────────────────────
+        info = QLabel(
+            "ℹ  <b>Admin machine setup:</b> Share a folder and place (or let NovoForm create) "
+            "the DB file there. No server required — all machines write directly to the shared file.<br>"
+            "ℹ  <b>Works best on a stable LAN.</b> If the shared folder is unreachable, "
+            "login will fail. Use 'Use Local DB' to fall back to standalone mode."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(
+            f"background:{_LIGHT}; color:{_NOVA_BLUE}; border-radius:6px; "
+            f"padding:10px 14px; font-size:9pt;")
+        info.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(info)
+        lay.addStretch()
+
+        self._refresh_db_status()
+        return w
+
+    def _refresh_db_status(self):
+        info = get_db_location()
+        self._db_path_lbl.setText(info["path"])
+        if info["is_central"]:
+            self._db_status_lbl.setText("🔗  Mode: <b>Central shared database</b>")
+            self._db_status_lbl.setStyleSheet(f"font-size:10pt; color:{_GREEN};")
+        else:
+            self._db_status_lbl.setText("💻  Mode: <b>Local database (this machine only)</b>")
+            self._db_status_lbl.setStyleSheet(f"font-size:10pt; color:{_NOVA_BLUE};")
+        if info["reachable"]:
+            self._db_reach_lbl.setText("✅  Path is reachable")
+            self._db_reach_lbl.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+        else:
+            self._db_reach_lbl.setText("❌  Path NOT reachable — check network / folder sharing")
+            self._db_reach_lbl.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+        self._central_path_edit.setText(
+            info["path"] if info["is_central"] else "")
+
+    def _browse_db_path(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Select or Create Database File",
+            "novoform_auth.db", "SQLite Database (*.db)")
+        if path:
+            self._central_path_edit.setText(path)
+
+    def _test_db_path(self):
+        raw = self._central_path_edit.text().strip()
+        if not raw:
+            self._db_msg_lbl.setStyleSheet(f"color:{_NOVA_BLUE}; font-size:9pt;")
+            self._db_msg_lbl.setText("ℹ  Empty path = local mode. No test needed.")
+            return
+        p = Path(raw)
+        if not p.parent.exists():
+            self._db_msg_lbl.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+            self._db_msg_lbl.setText(f"❌  Folder not found: {p.parent}")
+            return
+        # Try opening/creating a connection
+        try:
+            import sqlite3 as _sq
+            con = _sq.connect(str(p))
+            con.execute("SELECT 1")
+            con.close()
+            self._db_msg_lbl.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+            self._db_msg_lbl.setText(f"✅  Connection successful: {p}")
+        except Exception as e:
+            self._db_msg_lbl.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+            self._db_msg_lbl.setText(f"❌  Cannot open database: {e}")
+
+    def _save_db_path(self):
+        raw = self._central_path_edit.text().strip()
+        ok, msg = set_central_db_path(raw)
+        if ok:
+            self._db_msg_lbl.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+            log_action(self._user["username"], self._user["full_name"],
+                       "DB_PATH_CHANGED",
+                       f"central_db_path set to: '{raw or '(local)'}'")
+        else:
+            self._db_msg_lbl.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+        self._db_msg_lbl.setText(msg)
+        self._refresh_db_status()
+
+    def _reset_to_local_db(self):
+        ok = QMessageBox.question(
+            self, "Revert to Local",
+            "Revert to local database?\n\nThis machine will no longer use the shared DB.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        self._central_path_edit.clear()
+        self._save_db_path()

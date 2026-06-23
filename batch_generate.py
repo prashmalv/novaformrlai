@@ -17,8 +17,8 @@ DRAWINGS = [
     {
         "id": 1,
         "dxf": BASE / "Drawing 1" / "Drawing 1.dxf",
-        "panel_height_mm":   3200,   # Panel physical size
-        "casting_height_mm": 3200,   # Actual wall/column casting height → used for accessories
+        "panel_height_mm":   2470,   # Client quotation (COLUMN Rev) uses 2470mm panels
+        "casting_height_mm": 3200,   # Standard floor casting height → drives accessories
         "project_name": "Drawing 1 — Column & Wall Formwork",
         "client_name":  "Nova Formworks Pvt. Ltd.",
         "note": "Large residential complex — columns + walls",
@@ -35,7 +35,7 @@ DRAWINGS = [
     {
         "id": 3,
         "dxf": BASE / "Drawing 3" / "Drawing 3.dxf",
-        "panel_height_mm":   3200,
+        "panel_height_mm":   2470,   # Client quotation (FORMWORK QUOTATION) uses 2470mm panels
         "casting_height_mm": 3200,
         "project_name": "Drawing 3 — Column & Wall Formwork",
         "client_name":  "Nova Formworks Pvt. Ltd.",
@@ -44,16 +44,16 @@ DRAWINGS = [
     {
         "id": 4,
         "dxf": BASE / "Drawing 4" / "Drawing 4.dxf",
-        "panel_height_mm":   3200,
-        "casting_height_mm": 3200,
-        "project_name": "Drawing 4 — Shear Wall & Column Formwork",
+        "panel_height_mm":   2470,   # Shear Wall section uses 2470mm (Retaining=4200mm not yet supported in single pass)
+        "casting_height_mm": 4200,   # Retaining wall casting height drives accessories
+        "project_name": "Drawing 4 — Shear Wall & Retaining Wall Formwork",
         "client_name":  "Nova Formworks Pvt. Ltd.",
-        "note": "Large mixed structure — shear walls + columns",
+        "note": "Mixed: Shear walls (2470mm panels) + Retaining walls (4200mm) — single-pass limitation noted",
     },
     {
         "id": 5,
         "dxf": BASE / "Drawing 5" / "Drawing 5.dxf",
-        "panel_height_mm":   3000,   # Quotation 5 uses 3000mm panels
+        "panel_height_mm":   3000,   # ⚠ NOTE: 3000mm NOT in StandardProductList — needs field confirmation
         "casting_height_mm": 3200,   # Standard casting height
         "project_name": "Drawing 5 — Column Formwork (Beam elements excluded)",
         "client_name":  "Nova Formworks Pvt. Ltd.",

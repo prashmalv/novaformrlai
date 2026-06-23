@@ -26,10 +26,32 @@ _cfg_path = os.path.join(os.path.dirname(__file__), '../../config/panel_config.j
 with open(_cfg_path) as f:
     _CFG = json.load(f)
 
-STANDARD_WIDTHS: list[int] = _CFG['panel_system']['standard_widths_mm']
-OC_WIDTH: int = _CFG['panel_system']['oc_width_mm']
-IC_WIDTH: int = _CFG['panel_system']['ic_width_mm']
+STANDARD_WIDTHS: list[int]  = _CFG['panel_system']['standard_widths_mm']
+STANDARD_HEIGHTS: list[int] = _CFG['panel_system']['standard_heights_mm']
+OC_WIDTH:   int = _CFG['panel_system']['oc_width_mm']
+IC_WIDTH:   int = _CFG['panel_system']['ic_width_mm']
 MAX_SPACER: int = _CFG['panel_system']['max_spacer_mm']
+
+# Frozensets for O(1) catalog lookup
+_CATALOG_WIDTHS_SET:   frozenset = frozenset(STANDARD_WIDTHS)
+_CATALOG_HEIGHTS_SET:  frozenset = frozenset(STANDARD_HEIGHTS)
+
+
+def is_catalog_panel(panel) -> bool:
+    """
+    Return True if this PanelEntry exists in Nova's standard product catalog.
+    Rules:
+    - Height must be a catalog standard height (1235 / 2470 / 3705mm).
+    - OC and IC at any standard height are always catalog items.
+    - Flat panels must have a catalog width AND a catalog height.
+    """
+    h = int(round(panel.height_mm))
+    w = int(round(panel.width_mm))
+    if h not in _CATALOG_HEIGHTS_SET:
+        return False
+    if panel.is_corner or panel.is_inner_corner:
+        return True        # OC80 / IC100 at any standard height ✓
+    return w in _CATALOG_WIDTHS_SET
 
 
 def find_panel_combination(

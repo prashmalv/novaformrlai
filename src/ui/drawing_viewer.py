@@ -25,10 +25,12 @@ try:
 except ImportError:
     EZDXF_DRAW_OK = False
 
+import io
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QFont
 
 from src.models.element import StructuralElement, ElementType
@@ -59,6 +61,53 @@ _BG        = '#0d1117'
 _GRID_CLR  = '#1a2030'
 _LINE_CLR  = '#2a4a6a'
 
+# Polylines above this count switch to simplified (faster) rendering
+_POLYLINE_CAP = 300
+
+
+class _DXFBgWorker(QThread):
+    """
+    Renders the full DXF background off-screen (Agg backend — thread-safe).
+    Emits (png_bytes, xmin, xmax, ymin, ymax) when done.
+    On failure emits empty bytes so the caller keeps the polyline fallback.
+    """
+    finished = pyqtSignal(bytes, float, float, float, float)
+
+    def __init__(self, dxf_path: str, parent=None):
+        super().__init__(parent)
+        self._dxf_path = dxf_path
+
+    def run(self):
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            import ezdxf as _ezdxf
+            from ezdxf.addons.drawing import Frontend, RenderContext
+            from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+
+            fig = Figure(figsize=(14, 10), facecolor='#f8f9fa')
+            FigureCanvasAgg(fig)                     # attach non-Qt canvas
+            ax = fig.add_subplot(111)
+            ax.set_facecolor('#f8f9fa')
+            ax.set_aspect('equal', adjustable='datalim')
+            ax.axis('off')
+
+            doc = _ezdxf.readfile(self._dxf_path)
+            ctx = RenderContext(doc)
+            out = MatplotlibBackend(ax)
+            Frontend(ctx, out).draw_layout(doc.modelspace(), finalize=True)
+
+            xmin, xmax = ax.get_xlim()
+            ymin, ymax = ax.get_ylim()
+
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=96, bbox_inches='tight',
+                        facecolor='#f8f9fa')
+            buf.seek(0)
+            self.finished.emit(buf.read(), xmin, xmax, ymin, ymax)
+        except Exception:
+            self.finished.emit(b'', 0.0, 1.0, 0.0, 1.0)
+
 
 class DXFViewerWidget(QWidget):
     """
@@ -88,6 +137,7 @@ class DXFViewerWidget(QWidget):
         self._overlay_texts:   list               = []
         self._loaded:     bool                    = False
         self._full_render_done: bool              = False
+        self._bg_worker:  _DXFBgWorker | None     = None
         self._setup_ui()
 
     # ── UI Setup ───────────────────────────────────────────────────────────────
@@ -235,7 +285,18 @@ class DXFViewerWidget(QWidget):
         if title:
             self._lbl_title.setText(f"Drawing: {Path(title).name}")
 
-        self._render_full()
+        # ── Stage 1: instant preview (polyline fallback + element overlays) ──
+        self._render_fast_preview()
+
+        # ── Stage 2: if DXF path given, upgrade background off-screen ───────
+        if dxf_path and EZDXF_DRAW_OK:
+            self._render_mode_lbl.setText("⏳ Rendering DXF background…")
+            if self._bg_worker and self._bg_worker.isRunning():
+                self._bg_worker.terminate()
+                self._bg_worker.wait(500)
+            self._bg_worker = _DXFBgWorker(dxf_path, parent=self)
+            self._bg_worker.finished.connect(self._on_bg_ready)
+            self._bg_worker.start()
 
         n   = len(elements)
         col = sum(1 for e in elements if e.element_type == ElementType.COLUMN)
@@ -268,7 +329,84 @@ class DXFViewerWidget(QWidget):
         self._status.setText("Load a DXF/DWG file to see the drawing preview")
 
     # ── Rendering ─────────────────────────────────────────────────────────────
+
+    def _render_fast_preview(self):
+        """Stage 1 — instant: polyline outlines (capped) + element overlays."""
+        self.ax.clear()
+        self._overlay_patches = []
+        self._overlay_texts   = []
+        self._style_ax_fallback()
+
+        # Capped polyline rendering — always fast
+        n_poly = len(self._polylines)
+        polys  = self._polylines[:_POLYLINE_CAP]
+        for pts in polys:
+            if len(pts) < 2:
+                continue
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            if math.hypot(pts[-1][0]-pts[0][0], pts[-1][1]-pts[0][1]) > 0.1:
+                xs.append(pts[0][0]); ys.append(pts[0][1])
+            self.ax.plot(xs, ys, color=_LINE_CLR, linewidth=0.55,
+                         alpha=0.7, solid_capstyle='round', zorder=1)
+
+        skipped = n_poly - _POLYLINE_CAP
+        if skipped > 0:
+            self._render_mode_lbl.setText(
+                f"● Outline mode  ({skipped} polylines hidden for speed)")
+        else:
+            self._render_mode_lbl.setText("● Outline mode")
+
+        self._draw_overlays(light_bg=False)
+        self._draw_legend(light_bg=False)
+        self._fit_view()
+        self.canvas.draw_idle()
+
+    def _on_bg_ready(self, png_bytes: bytes, xmin: float, xmax: float,
+                     ymin: float, ymax: float):
+        """Stage 2 — called from main thread when background render completes."""
+        if not png_bytes:
+            self._render_mode_lbl.setText("● Outline mode  (DXF render failed)")
+            return
+
+        try:
+            import numpy as np
+            from PIL import Image as _PIL
+
+            img = _PIL.open(io.BytesIO(png_bytes))
+            img_arr = np.array(img)
+
+            # Preserve current view limits so user isn't jarred
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+
+            self.ax.clear()
+            self._overlay_patches = []
+            self._overlay_texts   = []
+            self._style_ax_cad()
+
+            self.ax.imshow(
+                img_arr,
+                extent=[xmin, xmax, ymin, ymax],
+                aspect='equal',
+                origin='upper',
+                zorder=0,
+                interpolation='bilinear',
+            )
+            self.ax.set_xlim(xlim)
+            self.ax.set_ylim(ylim)
+
+            self._draw_overlays(light_bg=True)
+            self._draw_legend(light_bg=True)
+            self.canvas.draw_idle()
+            self._full_render_done = True
+            self._render_mode_lbl.setText("● AutoCAD renderer")
+        except Exception:
+            # PIL not available — keep the fast preview, just clear the spinner
+            self._render_mode_lbl.setText("● Outline mode")
+
     def _render_full(self):
+        """Legacy sync render — kept for non-DXF paths."""
         self.ax.clear()
         self._overlay_patches = []
         self._overlay_texts   = []

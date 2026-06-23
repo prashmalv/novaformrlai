@@ -1036,6 +1036,59 @@ def parse_dwg(dwg_path: str,
         return [], f"DXF parsing error: {ex}"
 
 
+# ──────────────────────────────────────────
+# Auto Panel Height Detection
+# ──────────────────────────────────────────
+
+_STANDARD_HEIGHTS_FOR_DETECT = [1235, 2470, 3000, 3200, 3300, 3705, 4200, 5850]
+
+_HEIGHT_ANNO_RE = re.compile(
+    r'\bH(?:EIGHT|T)?[-=:\s]*(\d{3,4})\s*(?:MM)?\b', re.IGNORECASE)
+_PANEL_HT_RE = re.compile(
+    r'\bPANEL\b.*?(\d{3,4})', re.IGNORECASE)
+
+
+def detect_panel_height(dxf_path: str) -> int | None:
+    """
+    Scan TEXT/MTEXT entities in a DXF file for panel-height annotations.
+    Matches: 'HEIGHT=2470MM', 'HT-3000', 'PANEL HT 2470', 'H=2470', etc.
+    Returns the most-common matching standard height, or None if not found.
+    Fast — only reads text entities, not geometry.
+    """
+    if not EZDXF_OK:
+        return None
+    try:
+        doc = ezdxf.readfile(dxf_path)
+        msp = doc.modelspace()
+    except Exception:
+        return None
+
+    candidates: list[int] = []
+    for ent in msp:
+        try:
+            if ent.dxftype() == 'TEXT':
+                text = ent.dxf.text
+            elif ent.dxftype() == 'MTEXT':
+                text = ent.plain_mtext()
+            else:
+                continue
+            text_up = text.upper()
+            for m in _HEIGHT_ANNO_RE.finditer(text_up):
+                h = int(m.group(1))
+                if h in _STANDARD_HEIGHTS_FOR_DETECT:
+                    candidates.append(h)
+            for m in _PANEL_HT_RE.finditer(text_up):
+                h = int(m.group(1))
+                if h in _STANDARD_HEIGHTS_FOR_DETECT:
+                    candidates.append(h)
+        except Exception:
+            continue
+
+    if not candidates:
+        return None
+    return max(set(candidates), key=candidates.count)
+
+
 def parse_dwg_full(
     dwg_path: str,
     casting_height_mm: float = 3000,

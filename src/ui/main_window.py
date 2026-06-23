@@ -20,13 +20,13 @@ from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
 from src.models.element import (
     StructuralElement, ElementType, JunctionType, ProjectBOQ, ElementBOQ
 )
-from src.engine.panel_optimizer import compute_boq
+from src.engine.panel_optimizer import compute_boq, is_catalog_panel
 from src.output.boq_generator import aggregate_project_boq
 from src.output.pdf_generator import generate_pdf, generate_boq_pdf, generate_quotation_pdf
 from src.output.excel_generator import generate_excel_boq
 from src.parsers.dwg_parser import (
     parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf,
-    parse_dxf_full, parse_dwg_full,
+    parse_dxf_full, parse_dwg_full, detect_panel_height,
 )
 from src.parsers.pdf_parser import (
     render_pdf_page, get_page_count, extract_title_block,
@@ -43,6 +43,7 @@ from src.output.layout_drawing import (
 from src.ui.drawing_viewer import DXFViewerWidget
 from src.ui.ai_assistant import AIAssistantWidget
 from src.ui.view_3d import Elements3DWidget
+from src.output.dxf_generator import generate_formwork_dxf
 
 # ---------- Style Constants ----------
 NOVA_BLUE = "#1a3a5c"
@@ -274,19 +275,21 @@ class DWGReviewDialog(QDialog):
     """
     Shows auto-detected elements for user review before adding to project.
     User can: confirm, edit dimensions, delete false detections, change type.
+    NEW: "Add Missing Element" button for elements not detected in drawing.
     """
-    def __init__(self, elements: list, parent=None):
+    def __init__(self, elements: list, parent=None, casting_height_mm: float = 3200.0):
         super().__init__(parent)
         self.setWindowTitle("Review Detected Elements from Drawing")
-        self.resize(800, 500)
+        self.resize(860, 520)
         self._elements = list(elements)
+        self._casting_height_mm = casting_height_mm
 
         layout = QVBoxLayout(self)
 
         info = QLabel(
             f"<b>{len(elements)} element(s) detected.</b>  "
-            "Please review dimensions — auto-detection may not be 100% accurate. "
-            "Edit any incorrect values before confirming."
+            "Review dimensions — auto-detection may not be 100% accurate. "
+            "Edit values, uncheck false detections, or add missing elements manually."
         )
         info.setWordWrap(True)
         info.setStyleSheet(f"color: {NOVA_BLUE}; padding: 6px; background: {NOVA_LIGHT}; "
@@ -303,22 +306,15 @@ class DWGReviewDialog(QDialog):
         type_options = ["Column", "Wall", "Shear Wall", "Beam Bottom", "Beam Side"]
 
         for i, e in enumerate(elements):
-            # Checkbox column
             chk = QTableWidgetItem()
             chk.setCheckState(Qt.CheckState.Checked)
             chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(i, 0, chk)
-
-            # Label (editable)
             self.table.setItem(i, 1, QTableWidgetItem(e.label))
-
-            # Type (combo)
             combo = QComboBox()
             combo.addItems(type_options)
             combo.setCurrentText(e.element_type.value)
             self.table.setCellWidget(i, 2, combo)
-
-            # Dimensions (editable)
             self.table.setItem(i, 3, QTableWidgetItem(str(int(e.length_mm))))
             self.table.setItem(i, 4, QTableWidgetItem(str(int(e.width_mm))))
             self.table.setItem(i, 5, QTableWidgetItem(str(int(e.height_mm))))
@@ -326,9 +322,36 @@ class DWGReviewDialog(QDialog):
 
         layout.addWidget(self.table)
 
+        # ── Toolbar: Add / Remove element ─────────────────────────────────────
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 4, 0, 4)
+
+        btn_add = QPushButton("+ Add Missing Element")
+        btn_add.setStyleSheet(BTN_STYLE)
+        btn_add.setFixedHeight(30)
+        btn_add.setToolTip("Manually add an element not detected in the drawing")
+        btn_add.clicked.connect(self._add_missing_element)
+        toolbar.addWidget(btn_add)
+
+        btn_remove = QPushButton("Remove Selected Row")
+        btn_remove.setStyleSheet(BTN_SECONDARY)
+        btn_remove.setFixedHeight(30)
+        btn_remove.setToolTip("Remove the selected row (false detection)")
+        btn_remove.clicked.connect(self._remove_selected_row)
+        toolbar.addWidget(btn_remove)
+
+        toolbar.addStretch()
+
+        count_lbl = QLabel()
+        count_lbl.setStyleSheet("color:#555; font-size:11px;")
+        self._count_lbl = count_lbl
+        toolbar.addWidget(count_lbl)
+        layout.addLayout(toolbar)
+        self._update_count_label()
+
         note = QLabel(
-            "⚠  Dimensions shown are auto-measured from drawing geometry. "
-            "Always cross-check against drawing annotations."
+            "⚠  Dimensions are auto-measured from drawing geometry. "
+            "Cross-check against drawing annotations before confirming."
         )
         note.setStyleSheet("color: #e67e22; font-size: 10px; padding: 4px;")
         layout.addWidget(note)
@@ -340,6 +363,53 @@ class DWGReviewDialog(QDialog):
         btns.button(QDialogButtonBox.StandardButton.Ok).setText("Confirm & Add Selected")
         btns.button(QDialogButtonBox.StandardButton.Ok).setStyleSheet(BTN_STYLE)
         layout.addWidget(btns)
+
+    def _update_count_label(self):
+        if hasattr(self, '_count_lbl'):
+            self._count_lbl.setText(f"{self.table.rowCount()} row(s)")
+
+    def _add_missing_element(self):
+        dlg = AddElementDialog(self)
+        # Pre-fill casting height from context
+        dlg.height_spin.setValue(self._casting_height_mm)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result_element:
+            return
+        elem = dlg.result_element
+
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        chk = QTableWidgetItem()
+        chk.setCheckState(Qt.CheckState.Checked)
+        chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.table.setItem(row, 0, chk)
+        self.table.setItem(row, 1, QTableWidgetItem(elem.label))
+
+        type_options = ["Column", "Wall", "Shear Wall", "Beam Bottom", "Beam Side"]
+        combo = QComboBox()
+        combo.addItems(type_options)
+        combo.setCurrentText(elem.element_type.value)
+        self.table.setCellWidget(row, 2, combo)
+
+        self.table.setItem(row, 3, QTableWidgetItem(str(int(elem.length_mm))))
+        self.table.setItem(row, 4, QTableWidgetItem(str(int(elem.width_mm))))
+        self.table.setItem(row, 5, QTableWidgetItem(str(int(elem.height_mm))))
+        self.table.setItem(row, 6, QTableWidgetItem(str(elem.quantity)))
+
+        # Highlight manually-added rows
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item:
+                item.setBackground(QColor("#e8f5e9"))
+
+        self.table.scrollToBottom()
+        self._update_count_label()
+
+    def _remove_selected_row(self):
+        rows = set(idx.row() for idx in self.table.selectedIndexes())
+        for row in sorted(rows, reverse=True):
+            self.table.removeRow(row)
+        self._update_count_label()
 
     def get_confirmed_elements(self) -> list:
         from src.models.element import StructuralElement, ElementType
@@ -369,6 +439,281 @@ class DWGReviewDialog(QDialog):
             except (ValueError, AttributeError):
                 continue
         return result
+
+
+# ---------- Import Settings Confirmation ----------
+
+_PANEL_HEIGHT_OPTIONS = ["3705", "2470", "1235", "3200", "3000"]
+# Standard catalog: 3705, 2470, 1235mm.  3200/3000 kept for non-standard drawings.
+
+
+class DXFArrangeDialog(QDialog):
+    """
+    Shown before DXF export. Lets user see and reorder elements in the drawing.
+    Each row shows: order index, label, type, dimensions, and origin
+    (from drawing / manually added).  Up/Down buttons reorder the sequence.
+    The DXF strip layout follows this order left-to-right.
+    """
+
+    def __init__(self, elements: list, boqs: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Arrange Elements for DXF Drawing")
+        self.setMinimumSize(680, 420)
+        self.setModal(True)
+
+        # Work on copies so cancel doesn't affect original
+        self._pairs = list(zip(elements, boqs))
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 14, 16, 14)
+
+        # Info banner
+        info = QLabel(
+            "<b>DXF layout is a panel schedule — elements are drawn left to right in sequence.</b><br>"
+            "Use <b>▲ Up</b> / <b>▼ Down</b> to set the drawing order. "
+            "Elements added manually are shown in <span style='color:#1b5e20'>green</span>."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(
+            f"background:{NOVA_LIGHT}; color:{NOVA_BLUE}; "
+            "border-radius:4px; padding:8px; font-size:12px;"
+        )
+        layout.addWidget(info)
+
+        # Table
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["#", "Label", "Type", "Dimensions", "Origin"]
+        )
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 36)
+        self.table.setColumnWidth(1, 70)
+        self.table.setColumnWidth(2, 100)
+        self.table.setColumnWidth(4, 140)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setStyleSheet(TABLE_STYLE)
+        layout.addWidget(self.table)
+
+        self._populate_table()
+
+        # Up / Down buttons
+        btn_row = QHBoxLayout()
+        btn_up = QPushButton("▲  Move Up")
+        btn_up.setStyleSheet(BTN_SECONDARY)
+        btn_up.setFixedHeight(30)
+        btn_up.clicked.connect(self._move_up)
+        btn_row.addWidget(btn_up)
+
+        btn_dn = QPushButton("▼  Move Down")
+        btn_dn.setStyleSheet(BTN_SECONDARY)
+        btn_dn.setFixedHeight(30)
+        btn_dn.clicked.connect(self._move_down)
+        btn_row.addWidget(btn_dn)
+
+        btn_row.addStretch()
+
+        self._pos_lbl = QLabel()
+        self._pos_lbl.setStyleSheet("color:#555; font-size:11px;")
+        btn_row.addWidget(self._pos_lbl)
+        layout.addLayout(btn_row)
+
+        note = QLabel(
+            "Columns show as plan (cross-section) view.  "
+            "Walls show as elevation view.  All at same scale."
+        )
+        note.setStyleSheet("color:#777; font-size:10px; font-style:italic;")
+        layout.addWidget(note)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        ok = btns.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setText("Generate DXF in This Order →")
+        ok.setStyleSheet(BTN_STYLE)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+        self.table.selectionModel().selectionChanged.connect(self._on_selection)
+
+    def _populate_table(self):
+        self.table.setRowCount(0)
+        for i, (elem, _boq) in enumerate(self._pairs):
+            self.table.insertRow(i)
+            # Order number
+            num = QTableWidgetItem(str(i + 1))
+            num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(i, 0, num)
+            # Label
+            self.table.setItem(i, 1, QTableWidgetItem(elem.label))
+            # Type
+            self.table.setItem(i, 2, QTableWidgetItem(elem.element_type.value))
+            # Dimensions
+            dims = (
+                f"{elem.length_mm:.0f}×{elem.width_mm:.0f}mm  "
+                f"H={elem.height_mm:.0f}mm  Qty={elem.quantity}"
+            )
+            self.table.setItem(i, 3, QTableWidgetItem(dims))
+            # Origin: manually added elements have no bbox
+            has_bbox = bool(getattr(elem, 'bbox', None))
+            origin_txt = "From drawing" if has_bbox else "Manually added"
+            origin_item = QTableWidgetItem(origin_txt)
+            if not has_bbox:
+                origin_item.setForeground(QColor("#1b5e20"))
+                origin_item.setBackground(QColor("#e8f5e9"))
+                for col in range(5):
+                    item = self.table.item(i, col)
+                    if item:
+                        item.setBackground(QColor("#e8f5e9"))
+            self.table.setItem(i, 4, origin_item)
+
+        self._update_pos_label()
+
+    def _on_selection(self):
+        self._update_pos_label()
+
+    def _update_pos_label(self):
+        rows = self.table.selectionModel().selectedRows()
+        if rows:
+            self._pos_lbl.setText(f"Selected: row {rows[0].row() + 1} of {len(self._pairs)}")
+        else:
+            self._pos_lbl.setText(f"{len(self._pairs)} element(s)")
+
+    def _move_up(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if row == 0:
+            return
+        self._pairs[row], self._pairs[row - 1] = self._pairs[row - 1], self._pairs[row]
+        self._populate_table()
+        self.table.selectRow(row - 1)
+
+    def _move_down(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if row >= len(self._pairs) - 1:
+            return
+        self._pairs[row], self._pairs[row + 1] = self._pairs[row + 1], self._pairs[row]
+        self._populate_table()
+        self.table.selectRow(row + 1)
+
+    def get_ordered_elements(self) -> list:
+        return [p[0] for p in self._pairs]
+
+    def get_ordered_boqs(self) -> list:
+        return [p[1] for p in self._pairs]
+
+
+class ImportSettingsDialog(QDialog):
+    """
+    Shown after DXF/DWG parsing completes — lets user confirm (or override)
+    the panel height and casting height before reviewing detected elements.
+    Shows auto-detected height as a hint if found.
+    """
+
+    def __init__(self, element_count: int, drawing_name: str,
+                 current_panel_h: int, detected_panel_h,
+                 current_casting_h: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Import Settings — Confirm Before Review")
+        self.setMinimumWidth(460)
+        self._panel_h   = current_panel_h
+        self._casting_h = current_casting_h
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        summary = QLabel(
+            f"<b>{element_count} element(s)</b> detected from "
+            f"<b>{drawing_name}</b>.<br><br>"
+            "Confirm the panel height before reviewing detected elements. "
+            "You can also change it later from the Configuration tab."
+        )
+        summary.setWordWrap(True)
+        summary.setStyleSheet(
+            f"background:{NOVA_LIGHT}; color:{NOVA_BLUE}; "
+            f"padding:10px; border-radius:4px; font-size:11px;")
+        layout.addWidget(summary)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+
+        # Panel height
+        self._ph_combo = QComboBox()
+        self._ph_combo.addItems(_PANEL_HEIGHT_OPTIONS)
+        idx = self._ph_combo.findText(str(current_panel_h))
+        if idx >= 0:
+            self._ph_combo.setCurrentIndex(idx)
+
+        if detected_panel_h:
+            det_lbl = QLabel(
+                f"  ✓ Auto-detected: <b>{detected_panel_h} mm</b> "
+                f"(from drawing annotations)")
+            det_lbl.setStyleSheet(
+                f"color:{SUCCESS_GREEN}; font-size:10px; padding:2px 0;")
+            form.addRow("", det_lbl)
+            det_idx = self._ph_combo.findText(str(detected_panel_h))
+            if det_idx >= 0:
+                self._ph_combo.setCurrentIndex(det_idx)
+        else:
+            nd_lbl = QLabel(
+                "  ⓘ Height not found in drawing — using current setting")
+            nd_lbl.setStyleSheet("color:#888; font-size:10px; font-style:italic;")
+            form.addRow("", nd_lbl)
+
+        form.addRow("Panel Height (mm):", self._ph_combo)
+
+        # Casting height
+        self._ch_combo = QComboBox()
+        self._ch_combo.addItems(
+            ["4200", "3200", "3000", "2700", "2470", "2400", "2100", "1800"])
+        self._ch_combo.setEditable(True)
+        ch_idx = self._ch_combo.findText(str(current_casting_h))
+        if ch_idx >= 0:
+            self._ch_combo.setCurrentIndex(ch_idx)
+        form.addRow("Casting Height (mm):", self._ch_combo)
+
+        hint = QLabel(
+            "Panel Height = physical panel size used on site  ·  "
+            "Casting Height = actual concrete pour height (drives accessories)")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#777; font-size:9px; padding:2px 0;")
+        form.addRow("", hint)
+
+        layout.addLayout(form)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText(
+            "Proceed to Review Elements →")
+        btns.button(QDialogButtonBox.StandardButton.Ok).setStyleSheet(BTN_STYLE)
+        layout.addWidget(btns)
+
+    def _on_accept(self):
+        try:
+            self._panel_h   = int(self._ph_combo.currentText())
+            self._casting_h = int(self._ch_combo.currentText())
+        except ValueError:
+            pass
+        self.accept()
+
+    def get_settings(self) -> tuple:
+        """Returns (panel_height_mm, casting_height_mm)."""
+        return self._panel_h, self._casting_h
 
 
 # ---------- PDF Import Dialog ----------
@@ -1227,9 +1572,11 @@ class MainWindow(QMainWindow):
         f1.setSpacing(10)
 
         self.panel_height_combo = QComboBox()
-        self.panel_height_combo.addItems(["3200", "3000", "2470", "1228", "900", "600"])
+        self.panel_height_combo.addItems(_PANEL_HEIGHT_OPTIONS)
         self.panel_height_combo.setCurrentText("3200")
         self.panel_height_combo.setMinimumWidth(160)
+        self.panel_height_combo.currentIndexChanged.connect(
+            self._regenerate_boq_if_elements_present)
         f1.addRow("Panel Height (mm):", self.panel_height_combo)
 
         self.casting_height_combo = QComboBox()
@@ -1335,6 +1682,27 @@ class MainWindow(QMainWindow):
         hdr_row.addWidget(btn_view_layout)
 
         lay.addLayout(hdr_row)
+
+        # Non-standard panel warning banner (hidden until BOQ has non-catalog items)
+        self.nonstandard_banner = QLabel("")
+        self.nonstandard_banner.setWordWrap(True)
+        self.nonstandard_banner.setVisible(False)
+        self.nonstandard_banner.setStyleSheet(
+            "background:#fff3e0; color:#b84800; font-size:11px; font-weight:bold; "
+            "padding:10px 14px; border-left:4px solid #f57c00; border-radius:4px;")
+        lay.addWidget(self.nonstandard_banner)
+
+        self._ns_edit_btn = QPushButton("  ✏  Edit Elements to Fix")
+        self._ns_edit_btn.setStyleSheet(
+            "QPushButton { background:#f57c00; color:white; border:none; border-radius:4px; "
+            "padding:5px 14px; font-weight:bold; font-size:11px; } "
+            "QPushButton:hover { background:#e65100; }")
+        self._ns_edit_btn.setVisible(False)
+        self._ns_edit_btn.setFixedHeight(30)
+        self._ns_edit_btn.setToolTip(
+            "Open Elements tab — change panel height in Configuration or edit element dimensions")
+        self._ns_edit_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
+        lay.addWidget(self._ns_edit_btn)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
 
@@ -1479,6 +1847,34 @@ class MainWindow(QMainWindow):
         btn_layout_all.setMinimumHeight(38)
         btn_layout_all.clicked.connect(self._export_layout_pdf)
         g.addWidget(btn_layout_all)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("color: #b0c4d8;")
+        g.addWidget(sep2)
+
+        btn_dxf = QPushButton("  Export Formwork Drawing (DXF)")
+        btn_dxf.setStyleSheet(
+            "QPushButton { background:#1a3a5c; color:white; border:none; border-radius:5px; "
+            "padding:8px 16px; font-size:13px; font-weight:bold; }"
+            "QPushButton:hover { background:#2c5f8a; }"
+        )
+        btn_dxf.setMinimumHeight(42)
+        btn_dxf.setToolTip(
+            "Generate an AutoCAD-compatible DXF drawing with panel layouts, "
+            "annotations, BOQ table, and title block.\n"
+            "Opens in AutoCAD, FreeCAD, LibreCAD, or any DXF viewer."
+        )
+        btn_dxf.clicked.connect(self._export_drawing_dxf)
+        g.addWidget(btn_dxf)
+
+        dxf_note = QLabel(
+            "DXF contains: panel layout per element, OC corner marks, "
+            "waller & tierod positions, BOQ table, title block."
+        )
+        dxf_note.setWordWrap(True)
+        dxf_note.setStyleSheet("color:#555; font-size:10px; padding: 2px 4px;")
+        g.addWidget(dxf_note)
 
         lay.addWidget(grp)
 
@@ -1738,8 +2134,54 @@ class MainWindow(QMainWindow):
                     self._pending_3d_render_args  = None
                     self._refresh_element_table()
 
+            # ── Auto-detect panel height from DXF text annotations ───────────
+            detected_h = None
+            dxf_for_detect = dxf_render_path if (
+                dxf_render_path and dxf_render_path.lower().endswith('.dxf')
+            ) else (path if path.lower().endswith('.dxf') else None)
+            if dxf_for_detect:
+                try:
+                    detected_h = detect_panel_height(dxf_for_detect)
+                except Exception:
+                    pass
+
+            # ── Import Settings Confirmation ──────────────────────────────────
+            try:
+                cur_ph = int(self.panel_height_combo.currentText())
+            except ValueError:
+                cur_ph = 3200
+            try:
+                cur_ch = int(self.casting_height_combo.currentText())
+            except (ValueError, AttributeError):
+                cur_ch = 3200
+
+            settings_dlg = ImportSettingsDialog(
+                element_count    = len(detected),
+                drawing_name     = Path(path).name,
+                current_panel_h  = cur_ph,
+                detected_panel_h = detected_h,
+                current_casting_h= cur_ch,
+                parent           = self,
+            )
+            if settings_dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            confirmed_ph, confirmed_ch = settings_dlg.get_settings()
+
+            # Apply confirmed heights to Configuration dropdowns
+            ph_idx = self.panel_height_combo.findText(str(confirmed_ph))
+            if ph_idx >= 0:
+                self.panel_height_combo.setCurrentIndex(ph_idx)
+            else:
+                self.panel_height_combo.setCurrentText(str(confirmed_ph))
+            ch_idx = self.casting_height_combo.findText(str(confirmed_ch))
+            if ch_idx >= 0:
+                self.casting_height_combo.setCurrentIndex(ch_idx)
+            else:
+                self.casting_height_combo.setCurrentText(str(confirmed_ch))
+
             # ── Review dialog ─────────────────────────────────────────────────
-            dlg = DWGReviewDialog(detected, self)
+            dlg = DWGReviewDialog(detected, self,
+                                  casting_height_mm=float(confirmed_ch))
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
 
@@ -1782,12 +2224,15 @@ class MainWindow(QMainWindow):
                  "DXF_IMPORT",
                  f"{added} elements from: {Path(path).name}")
 
+            ph_used = int(self.panel_height_combo.currentText())
             QMessageBox.information(
                 self, "Import Complete",
                 f"✓  {added} element(s) imported from drawing.\n\n"
+                f"Panel height set to: {ph_used} mm\n\n"
                 f"Drawing Preview and 3D View tabs will render\n"
                 f"when you click them (keeps UI fast).\n\n"
-                f"Next: go to Configuration tab → set panel height → Compute BOQ."
+                f"Next: go to Configuration tab → Run Optimization & Generate BOQ.\n"
+                f"Tip: change panel height in Configuration → BOQ updates instantly."
             )
 
         # Start background worker
@@ -1870,48 +2315,120 @@ class MainWindow(QMainWindow):
             msg += f"\n\n⚠ {n_warn} element(s) exceed 4500mm height — engineer review required!"
         QMessageBox.information(self, "Success", msg)
 
+    def _regenerate_boq_if_elements_present(self):
+        """
+        Silently recomputes BOQ when panel height dropdown changes at runtime.
+        Only fires if a BOQ has already been generated (self._boqs is non-empty).
+        No dialogs or tab switches — tables update in place.
+        """
+        if not self._elements or not self._boqs:
+            return
+        panel_h = float(self.panel_height_combo.currentText())
+        new_boqs = []
+        for elem in self._elements:
+            try:
+                new_boqs.append(compute_boq(elem, panel_h))
+            except Exception:
+                return  # bail silently on any failure
+
+        self._boqs = new_boqs
+        self._project = ProjectBOQ(
+            project_name      = self.project_name_edit.text().strip(),
+            client_name       = self.client_name_edit.text().strip(),
+            client_address    = self.client_addr_edit.text().strip(),
+            ipo_no            = self.ipo_edit.text().strip(),
+            date              = self.date_edit.text().strip(),
+            element_boqs      = self._boqs,
+            panel_height_mm   = panel_h,
+            num_sets          = self.num_sets_spin.value(),
+            gst_enabled       = self.gst_check.isChecked(),
+            freight_amount    = self.freight_spin.value(),
+            panel_rate_per_sqm= self.rate_panel.value(),
+        )
+        self._agg = aggregate_project_boq(self._project)
+        self._acc_boqs = []
+        for elem, boq in zip(self._elements, self._boqs):
+            self._acc_boqs.append(calculate_accessories(elem, boq, panel_h))
+        self._acc_agg = aggregate_accessories(
+            self._acc_boqs, self.num_sets_spin.value())
+        self._refresh_boq_tables()
+        self.ai_widget.update_data(
+            self._elements, self._boqs,
+            self._agg, self._acc_agg, self._project)
+
     def _refresh_boq_tables(self):
         if not self._boqs or not self._agg:
             return
 
+        NS_BG    = QColor("#FFF3E0")  # light orange — non-standard rows
+        NS_FG    = QColor("#b84800")  # dark orange text
+        OC_COLOR = QColor(NOVA_BLUE)
+
         # --- Detail table ---
+        # Each entry: (col_values, is_nonstandard, is_oc)
         rows = []
+        ns_elem_labels: list[str] = []
+
         for eboq in self._boqs:
-            elem_lbl = f"{eboq.element.label} ({eboq.element.element_type.value})\n" \
-                       f"{eboq.element.length_mm:.0f}×{eboq.element.width_mm:.0f}mm\n" \
-                       f"H={eboq.element.height_mm:.0f}  Qty={eboq.element.quantity}"
+            elem_lbl = (
+                f"{eboq.element.label} ({eboq.element.element_type.value})\n"
+                f"{eboq.element.length_mm:.0f}×{eboq.element.width_mm:.0f}mm\n"
+                f"H={eboq.element.height_mm:.0f}  Qty={eboq.element.quantity}"
+            )
+            # Flag this element if ANY of its panels is non-standard
+            if any(not is_catalog_panel(p) for p in eboq.panels):
+                if eboq.element.label not in ns_elem_labels:
+                    ns_elem_labels.append(eboq.element.label)
+
             for i, p in enumerate(eboq.panels):
+                is_ns    = not is_catalog_panel(p)
                 warn_txt = "; ".join(eboq.warnings) if i == 0 else ""
-                rows.append([
-                    elem_lbl if i == 0 else "",
-                    p.size_label,
-                    str(p.quantity),
-                    f"{p.area_sqm:.4f}",
-                    f"{p.total_area_sqm:.4f}",
-                    warn_txt,
-                ])
+                if is_ns:
+                    ns_note  = "⚠ Not in Nova catalog"
+                    warn_txt = f"{ns_note}; {warn_txt}" if warn_txt else ns_note
+                rows.append((
+                    [elem_lbl if i == 0 else "",
+                     p.size_label, str(p.quantity),
+                     f"{p.area_sqm:.4f}", f"{p.total_area_sqm:.4f}",
+                     warn_txt],
+                    is_ns,
+                    p.is_corner,
+                ))
 
         self.boq_detail_table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
+        for r, (row, is_ns, is_oc) in enumerate(rows):
             for c, val in enumerate(row):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if c == 5 and val:  # warning col
-                    item.setForeground(QColor(WARN_ORANGE))
-                    item.setFont(QFont("Helvetica Neue", 9, QFont.Weight.Bold))
-                if c == 1 and 'OC' in val:
-                    item.setForeground(QColor(NOVA_BLUE))
-                    item.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
+                if is_ns:
+                    item.setBackground(NS_BG)
+                    if c in (1, 5):
+                        item.setForeground(NS_FG)
+                        item.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
+                else:
+                    if c == 5 and val:
+                        item.setForeground(QColor(WARN_ORANGE))
+                        item.setFont(QFont("Helvetica Neue", 9, QFont.Weight.Bold))
+                    if c == 1 and is_oc:
+                        item.setForeground(OC_COLOR)
+                        item.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
                 self.boq_detail_table.setItem(r, c, item)
 
         # --- Summary table ---
+        from src.engine.panel_optimizer import _CATALOG_HEIGHTS_SET
         summary = self._agg['summary_panels']
-        rate = self._agg['rate_per_sqm']
+        rate    = self._agg['rate_per_sqm']
         self.boq_summary_table.setRowCount(len(summary))
         for r, (key, d) in enumerate(summary.items()):
+            # Detect non-standard height from label key like "Panel 600*3000"
+            ns_row = False
+            try:
+                ns_row = int(key.split('*')[1].strip()) not in _CATALOG_HEIGHTS_SET
+            except Exception:
+                pass
             amount = d['area_sqm'] * rate
             vals = [
-                key,
+                ("⚠ " + key) if ns_row else key,
                 f"{d['unit_area_sqm']:.4f}",
                 str(d['quantity']),
                 f"{d['area_sqm']:.4f}",
@@ -1920,10 +2437,35 @@ class MainWindow(QMainWindow):
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if c == 0 and ('OC' in key or 'IC' in key):
-                    item.setForeground(QColor(NOVA_BLUE))
-                    item.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
+                if ns_row:
+                    item.setBackground(NS_BG)
+                    if c == 0:
+                        item.setForeground(NS_FG)
+                        item.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
+                else:
+                    if c == 0 and ('OC' in key or 'IC' in key):
+                        item.setForeground(OC_COLOR)
+                        item.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
                 self.boq_summary_table.setItem(r, c, item)
+
+        # --- Non-standard banner ---
+        total_ns = sum(1 for _, is_ns, _ in rows if is_ns)
+        if total_ns:
+            labels_str = ", ".join(ns_elem_labels[:5])
+            if len(ns_elem_labels) > 5:
+                labels_str += f" +{len(ns_elem_labels) - 5} more"
+            self.nonstandard_banner.setText(
+                f"⚠  {total_ns} NON-STANDARD panel size(s) found — highlighted in orange.  "
+                f"Affected elements: {labels_str}\n"
+                f"Standard heights are 3705 / 2470 / 1235 mm only.  "
+                f"Fix: change Panel Height in Configuration tab to a standard size and Re-run BOQ.  "
+                f"Or use Elements tab → Edit to adjust individual element dimensions."
+            )
+            self.nonstandard_banner.setVisible(True)
+            self._ns_edit_btn.setVisible(True)
+        else:
+            self.nonstandard_banner.setVisible(False)
+            self._ns_edit_btn.setVisible(False)
 
         # --- Cost summary ---
         agg = self._agg
@@ -2191,3 +2733,78 @@ class MainWindow(QMainWindow):
             self.unsetCursor()
             self.export_log.append(f"✗ Layout PDF error: {ex}")
             QMessageBox.critical(self, "Export Error", str(ex))
+
+    def _export_drawing_dxf(self):
+        """Export a complete formwork drawing as AutoCAD DXF."""
+        if not self._elements or not self._boqs:
+            QMessageBox.warning(self, "No Elements",
+                                "Please import a drawing and run optimization first.")
+            return
+
+        # ── Step 1: Let user arrange element order ────────────────────────────
+        arrange_dlg = DXFArrangeDialog(self._elements, self._boqs, self)
+        if arrange_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        ordered_elements = arrange_dlg.get_ordered_elements()
+        ordered_boqs = arrange_dlg.get_ordered_boqs()
+
+        # ── Step 2: File save dialog ──────────────────────────────────────────
+        proj_name = getattr(self, '_project_name_edit', None)
+        proj_name_str = proj_name.text().strip() if proj_name else "Nova Project"
+
+        default_name = f"{proj_name_str.replace(' ','_')}_Formwork.dxf"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Formwork Drawing DXF", default_name,
+            "AutoCAD DXF (*.dxf)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith('.dxf'):
+            path += '.dxf'
+
+        panel_h = float(self.panel_height_combo.currentText())
+
+        # Build ProjectBOQ for title block
+        try:
+            pname_edit = getattr(self, 'project_name_edit', None)
+            cname_edit = getattr(self, 'client_name_edit', None)
+            from src.models.element import ProjectBOQ as _PBOQ
+            proj = _PBOQ(
+                project_name=pname_edit.text().strip() if pname_edit else "Nova Project",
+                client_name=cname_edit.text().strip() if cname_edit else "",
+                client_address="",
+                date=date.today().strftime("%d-%m-%Y"),
+                element_boqs=self._boqs,
+                panel_height_mm=panel_h,
+                num_sets=1,
+            )
+        except Exception:
+            from src.models.element import ProjectBOQ as _PBOQ
+            proj = _PBOQ(
+                project_name="Nova Project", client_name="",
+                client_address="", date=date.today().strftime("%d-%m-%Y"),
+                element_boqs=self._boqs, panel_height_mm=panel_h, num_sets=1,
+            )
+
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            out = generate_formwork_dxf(
+                ordered_elements, ordered_boqs, proj, panel_h, path
+            )
+            self.unsetCursor()
+            self.export_log.append(f"✓ Formwork DXF saved: {out}")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("DXF Export Success")
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(
+                f"Formwork drawing saved:\n{path}\n\n"
+                f"{len(self._elements)} element(s)  |  Panel H = {panel_h:.0f}mm\n\n"
+                "Open in AutoCAD, FreeCAD, or any DXF viewer.\n"
+                "Recommended print scale: 1:20"
+            )
+            msg.exec()
+        except Exception as ex:
+            self.unsetCursor()
+            self.export_log.append(f"✗ DXF export error: {ex}")
+            QMessageBox.critical(self, "DXF Export Error",
+                                 f"Could not generate DXF:\n{str(ex)}")

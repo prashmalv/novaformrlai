@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nova Standard Product Catalog — Findings</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, Arial, sans-serif; background: #f0f4f8; color: #1a3a5c; }
+  .header { background: #1a3a5c; color: white; padding: 20px 32px; }
+  .header h1 { font-size: 20px; font-weight: 700; }
+  .header p { font-size: 12px; color: #a8c8e8; margin-top: 4px; }
+  .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+  .alert { border-radius: 6px; padding: 14px 18px; margin-bottom: 18px; font-size: 13px; line-height: 1.6; }
+  .alert-good { background: #e8f5e9; border-left: 4px solid #27ae60; }
+  .alert-warn { background: #fff3e0; border-left: 4px solid #f57c00; }
+  .alert-critical { background: #fce4ec; border-left: 4px solid #c62828; }
+  .alert b { font-weight: 700; }
+  .card { background: white; border-radius: 8px; padding: 20px 24px; margin-bottom: 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .card h2 { font-size: 14px; font-weight: 700; color: #1a3a5c; margin-bottom: 14px; border-bottom: 2px solid #dce8f5; padding-bottom: 8px; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; margin: 3px; }
+  .badge-blue { background: #dce8f5; color: #1a3a5c; }
+  .badge-green { background: #e8f5e9; color: #1b5e20; }
+  .badge-red { background: #fce4ec; color: #c62828; }
+  .badge-orange { background: #fff3e0; color: #e65100; }
+  .badge-gray { background: #eee; color: #555; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; overflow-x: auto; }
+  th { background: #2c5f8a; color: white; padding: 8px 12px; text-align: left; }
+  td { padding: 7px 12px; border-bottom: 1px solid #e8f0f7; }
+  tr:nth-child(even) td { background: #f5f8fc; }
+  .tag-match { color: #27ae60; font-weight: 700; }
+  .tag-miss { color: #c62828; font-weight: 700; }
+  .tag-warn { color: #e67e22; font-weight: 700; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 640px) { .two-col { grid-template-columns: 1fr; } }
+  .section-label { font-size: 11px; font-weight: 700; color: #2c5f8a; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  ul li { font-size: 12px; line-height: 1.8; margin-left: 18px; list-style: disc; }
+  .q-item { background: #f5f8fc; border-radius: 4px; padding: 10px 14px; margin-bottom: 8px; font-size: 12px; line-height: 1.6; }
+  .q-item .q-no { font-weight: 700; color: #c0392b; margin-right: 6px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Nova Formworks — Standard Product Catalog Analysis</h1>
+  <p>Source: StandardProductList.xlsx &nbsp;|&nbsp; Compared against: panel_config.json &nbsp;|&nbsp; June 2026</p>
+</div>
+
+<div class="container">
+
+  <!-- Critical finding -->
+  <div class="alert alert-critical">
+    <b>⚠ Critical Finding:</b> Nova's standard catalog has <b>only 3 panel heights: 1235mm, 2470mm, 3705mm</b>.
+    Heights 3000mm and 3200mm do <b>NOT</b> appear in the catalog.
+    Drawing 5 (our batch config) uses 3000mm — this needs field confirmation with Yukti's team.
+  </div>
+
+  <div class="alert alert-good">
+    <b>✓ Good News:</b> 1235mm is confirmed (not 1228mm — our earlier fix was correct).
+    Standard widths (100–600mm) all match what our optimizer uses after the catalog update.
+    Widths like 520, 490, 440mm that we had speculatively are <b>removed</b> — they don't exist.
+  </div>
+
+  <!-- Heights -->
+  <div class="card">
+    <h2>Standard Panel Heights — Before vs After</h2>
+    <div class="two-col">
+      <div>
+        <div class="section-label">Before (Our Assumption)</div>
+        <span class="badge badge-green">3705 ✓</span>
+        <span class="badge badge-red">3300 ✗</span>
+        <span class="badge badge-red">3200 ✗</span>
+        <span class="badge badge-red">3000 ✗</span>
+        <span class="badge badge-green">2470 ✓</span>
+        <span class="badge badge-red">1228 ✗</span>
+        <span class="badge badge-red">900 ✗</span>
+        <span class="badge badge-red">600 ✗</span>
+        <span class="badge badge-orange">5850 ❓</span>
+        <span class="badge badge-orange">4200 ❓</span>
+      </div>
+      <div>
+        <div class="section-label">After (Confirmed from Catalog)</div>
+        <span class="badge badge-green">3705 ✓</span>
+        <span class="badge badge-green">2470 ✓</span>
+        <span class="badge badge-green">1235 ✓</span>
+        <br><br>
+        <span style="font-size:11px; color:#c62828;">3000mm, 3200mm, 3300mm, 900mm, 600mm — NOT in catalog</span><br>
+        <span style="font-size:11px; color:#e67e22;">5850mm, 4200mm — not in catalog, removed from pending</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Widths -->
+  <div class="card">
+    <h2>Standard Panel Widths — Before vs After</h2>
+    <div class="two-col">
+      <div>
+        <div class="section-label">Removed (not in catalog)</div>
+        <span class="badge badge-red">520</span>
+        <span class="badge badge-red">490</span>
+        <span class="badge badge-red">440</span>
+        <span class="badge badge-red">390</span>
+        <span class="badge badge-red">385</span>
+        <span class="badge badge-red">365</span>
+        <span class="badge badge-red">360</span>
+        <span class="badge badge-red">345</span>
+        <span class="badge badge-red">340</span>
+        <span class="badge badge-red">325</span>
+        <span class="badge badge-red">310</span>
+        <span class="badge badge-red">290</span>
+        <span class="badge badge-red">280</span>
+        <span class="badge badge-red">275</span>
+        <span class="badge badge-red">270</span>
+        <span class="badge badge-red">265</span>
+        <span class="badge badge-red">260</span>
+        <span class="badge badge-red">240</span>
+        <span class="badge badge-red">225</span>
+        <span class="badge badge-red">220</span>
+        <span class="badge badge-red">215</span>
+        <br><small style="color:#c62828; font-size:11px;">21 widths removed</small>
+      </div>
+      <div>
+        <div class="section-label">Confirmed catalog widths (mm)</div>
+        <span class="badge badge-green">600</span>
+        <span class="badge badge-green">500</span>
+        <span class="badge badge-green">400</span>
+        <span class="badge badge-green">350</span>
+        <span class="badge badge-green">300</span>
+        <span class="badge badge-green">250</span>
+        <span class="badge badge-green">230</span>
+        <span class="badge badge-green">200</span>
+        <span class="badge badge-green">150</span>
+        <span class="badge badge-green">125</span>
+        <span class="badge badge-green">100</span>
+        <span class="badge badge-gray">40 (spacer)</span>
+        <br><br>
+        <div class="section-label">Spacers (fill plates, not BOQ panels)</div>
+        <span class="badge badge-gray">5</span>
+        <span class="badge badge-gray">10</span>
+        <span class="badge badge-gray">15</span>
+        <span class="badge badge-gray">20</span>
+        <span class="badge badge-gray">25</span>
+        <span class="badge badge-gray">40</span>
+        <span style="font-size:10px; color:#888;">mm × 1235mm</span>
+        <br><br>
+        <b style="color:#c62828; font-size:11px;">Note: 235mm ✗ and 288mm ✗ NOT in catalog (we had these as "pending")</b>
+      </div>
+    </div>
+  </div>
+
+  <!-- OC / IC -->
+  <div class="card">
+    <h2>Outer Corner (OC) &amp; Inner Corner (IC)</h2>
+    <table>
+      <tr><th>Item</th><th>Catalog (SKU)</th><th>Our Config</th><th>Status</th></tr>
+      <tr><td>Outer Corner</td><td>80 × 1235mm OC (SKU 1)</td><td>oc_width_mm = 80</td><td class="tag-match">✓ Width correct</td></tr>
+      <tr><td>Inner Corner</td><td>100 × 1235mm IC (SKU 2)</td><td>ic_width_mm = 100</td><td class="tag-match">✓ Width correct</td></tr>
+      <tr><td>OC height variety</td><td>Only 1235mm listed</td><td>Used at panel height</td><td class="tag-warn">⚠ Ask Yukti: are OC/IC available in 2470 &amp; 3705mm too?</td></tr>
+    </table>
+  </div>
+
+  <!-- Full product list summary -->
+  <div class="card">
+    <h2>Complete Standard Products Reference</h2>
+    <table>
+      <tr><th>Category</th><th>Items in Catalog</th></tr>
+      <tr><td>Panels (Width × Height)</td><td>12 widths × 3 heights = 36 SKUs (100–600mm, heights 1235/2470/3705mm)</td></tr>
+      <tr><td>Large Panel</td><td>1000 × 1235mm only (1 SKU)</td></tr>
+      <tr><td>Spacers</td><td>5, 10, 15, 20, 25, 40mm × 1235mm</td></tr>
+      <tr><td>Outer Corner</td><td>80 × 1235mm</td></tr>
+      <tr><td>Inner Corner</td><td>100 × 1235mm</td></tr>
+      <tr><td>Wallers</td><td>0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0m lengths</td></tr>
+      <tr><td>Tie Rods</td><td>16mm dia: 0.8, 1.0, 1.2, 1.5, 3.0, 6.0m</td></tr>
+      <tr><td>Pin &amp; Wedge</td><td>20mm, 50mm (replaces old "PIN 80MM" in our config)</td></tr>
+      <tr><td>Round Pin</td><td>20mm</td></tr>
+      <tr><td>Anchor Nut</td><td>90mm, 100mm</td></tr>
+      <tr><td>PVC items</td><td>PVC Cap, PVC Cone</td></tr>
+      <tr><td>Props</td><td>1×1m, 1.5×1.5m, 2×2m; Double-head: 1.5×3m, 2.5×4m</td></tr>
+      <tr><td>Other</td><td>Chabi Pana Set, Key Handle, Chemfer (3 sizes), Cleaning Liquid, Haunch, Chali, Stair</td></tr>
+    </table>
+  </div>
+
+  <!-- Impact on drawings -->
+  <div class="card">
+    <h2>Impact on Drawing 1–5 (Batch Config)</h2>
+    <table>
+      <tr><th>Drawing</th><th>Panel Height Used</th><th>In Catalog?</th><th>Action</th></tr>
+      <tr><td>D1</td><td>2470mm</td><td class="tag-match">✓ Standard</td><td>No change</td></tr>
+      <tr><td>D2</td><td>2470mm</td><td class="tag-match">✓ Standard</td><td>No change</td></tr>
+      <tr><td>D3</td><td>2470mm</td><td class="tag-match">✓ Standard</td><td>No change</td></tr>
+      <tr><td>D4</td><td>2470mm panels</td><td class="tag-match">✓ Standard</td><td>No change</td></tr>
+      <tr><td><b>D5</b></td><td><b>3000mm</b></td><td class="tag-miss">✗ NOT in catalog</td><td><b>Ask Yukti — should be 2470mm or 3705mm?</b></td></tr>
+    </table>
+  </div>
+
+  <!-- Questions for visit -->
+  <div class="card">
+    <h2>Questions to Ask Yukti Tomorrow (from Catalog Findings)</h2>
+    <div class="q-item"><span class="q-no">Q1.</span> "Drawing 5 ke quotation mein 3000mm panels dikha rahe hain, but standard catalog mein 3000mm nahi hai. Kya 3000mm custom size hai ya hum 2470mm ya 3705mm use karein?"</div>
+    <div class="q-item"><span class="q-no">Q2.</span> "OC (Outer Corner) aur IC (Inner Corner) ki catalog mein sirf 1235mm height hai. Kya 2470mm aur 3705mm height ke OC/IC bhi available hain ya do pieces stack karte hain?"</div>
+    <div class="q-item"><span class="q-no">Q3.</span> "1000mm wide panel — sirf 1235mm height mein hai. 2470mm ya 3705mm height mein available hai kya?"</div>
+    <div class="q-item"><span class="q-no">Q4.</span> "Pin &amp; Wedge catalog mein 20mm aur 50mm hain — humara purana config 80mm PIN mention karta tha. 80mm PIN alag hai ya 50mm same hai?"</div>
+    <div class="q-item"><span class="q-no">Q5.</span> "Spacers (5–40mm) — kya yeh BOQ mein list hote hain ya site pe adjust kar lete hain? Kyunki hamare optimizer mein 40mm spacer BOQ mein aata hai."</div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -13,6 +13,9 @@ build/
 !assets/images/NovaLogo.png
 tests/*.dxf
 
+# API keys and local config — never commit
+config/api_config.json
+
 # Client data — never commit private project files
 data/Client Samples/
 data/clients/

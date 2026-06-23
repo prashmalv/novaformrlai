@@ -2,22 +2,35 @@
 REM ============================================================
 REM  NovoForm — Windows Installation Script
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.1 — Updated Branding Release (May 2026)
+REM  Version: 1.3 — Formwork DXF Drawing Generator (June 2026)
 REM  Developed by RLAI (rightleft.ai)
 REM
-REM  What's new in this release:
-REM    - Nova 2025 brand colors and logo in all outputs
-REM    - Separate BOQ PDF + Quotation PDF export
-REM    - Excel: 3 sheets (FORMWORK BOQ, QUOTATION, DAYS BOQ)
-REM    - Beam Bottom + Beam Side element support
-REM    - Multi-floor label detection (CC1/F1 format)
-REM    - Panel heights: 3200 / 3000 / 2470 / 1228mm
-REM    - BOQ Number + Quotation Number fields
-REM    - PDF Drawing import (preview + manual element entry)
+REM  What's new in v1.3:
+REM    - Export Formwork Drawing as AutoCAD DXF (NEW)
+REM      Opens in AutoCAD, FreeCAD, LibreCAD
+REM      Contains: panel layout, OC corners, wallers,
+REM      tierods, BOQ table, title block (all layers)
+REM    - "Add Missing Element" in Review Dialog
+REM      Manually add columns/walls not detected in drawing
+REM    - DXF Arrange Dialog: set element order before export
+REM      Up/Down reorder, manually added shown in green
+REM    - Shared database setup via Admin Panel
+REM      Central DB path for multi-machine LAN use
+REM    - API key secured: not shipped in ZIP
+REM
+REM  What was new in v1.2:
+REM    - Panel catalog from StandardProductList.xlsx (official)
+REM      Standard heights: 3705 / 2470 / 1235mm ONLY
+REM    - Non-standard panels highlighted orange in BOQ output
+REM    - Auto-detect panel height from DXF drawing text
+REM    - Import Settings screen before element review
+REM    - Change panel height -> BOQ updates live (no re-upload)
+REM    - 21 non-catalog widths removed from optimizer
 REM
 REM  Usage: Double-click this file on any Windows machine.
 REM  Requires Python 3.10+ installed and in PATH.
 REM  Internet required only during first install (to download packages).
+REM  Default login — Username: admin  Password: nova@123
 REM ============================================================
 
 setlocal enabledelayedexpansion
@@ -29,23 +42,26 @@ set APP_DIR=%~dp0
 if "%APP_DIR:~-1%"=="\" set APP_DIR=%APP_DIR:~0,-1%
 cd /d "%APP_DIR%"
 
-title NovoForm v1.1 Installer — Nova Formworks Updated Branding
+title NovoForm v1.3 Installer — Nova Formworks
 
 echo.
 echo  ====================================================
 echo   NovoForm — Formwork Analysis and BOQ Generator
-echo   Version 1.1  ^|  Nova Formworks Pvt. Ltd.
-echo   Updated Branding Release  ^|  May 2026
+echo   Version 1.3  ^|  Nova Formworks Pvt. Ltd.
+echo   Formwork DXF Drawing Generator  ^|  June 2026
 echo   Developed by RLAI (rightleft.ai)
 echo  ====================================================
 echo.
-echo   What's new in this update:
-echo     - Nova 2025 brand template (BOQ PDF + Quotation PDF)
-echo     - Excel: FORMWORK BOQ + QUOTATION + DAYS BOQ sheets
-echo     - Beam Bottom / Beam Side element types added
-echo     - Multi-floor label support (CC1/F1, W3/GF format)
-echo     - Panel heights: 3200 / 3000 / 2470 / 1228mm
-echo     - PDF Drawing import with visual preview
+echo   What's new in v1.3:
+echo     - Export Formwork Drawing as AutoCAD DXF
+echo       (panel layout, OC corners, wallers, tierods,
+echo        BOQ table, title block — all layers)
+echo     - Add Missing Element in Review Dialog
+echo     - DXF Arrange: set element order before export
+echo     - Central shared DB for multi-machine LAN setup
+echo.
+echo   Default login: admin / nova@123
+echo   (Change password immediately after first login)
 echo.
 echo   Installing from: %APP_DIR%
 echo.
@@ -149,7 +165,7 @@ set LAUNCHER=%APP_DIR%\launch_novoform.vbs
 
 REM Create shortcut on Desktop
 set SHORTCUT=%USERPROFILE%\Desktop\NovoForm.lnk
-powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT%'); $s.TargetPath = 'wscript.exe'; $s.Arguments = '\"%LAUNCHER%\"'; $s.WorkingDirectory = '%APP_DIR%'; $s.Description = 'NovoForm BOQ Generator v1.1'; $s.Save()" >nul 2>&1
+powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT%'); $s.TargetPath = 'wscript.exe'; $s.Arguments = '\"%LAUNCHER%\"'; $s.WorkingDirectory = '%APP_DIR%'; $s.Description = 'NovoForm BOQ Generator v1.2'; $s.Save()" >nul 2>&1
 
 if exist "%SHORTCUT%" (
     echo  Desktop shortcut created: NovoForm.lnk
@@ -157,10 +173,18 @@ if exist "%SHORTCUT%" (
     echo  Shortcut creation skipped — launch manually via launch_novoform.vbs
 )
 
+REM ── Create api_config.json from template if not present ──
+if not exist "%APP_DIR%\config\api_config.json" (
+    if exist "%APP_DIR%\config\api_config.template.json" (
+        copy "%APP_DIR%\config\api_config.template.json" "%APP_DIR%\config\api_config.json" >nul
+        echo  Config created from template.
+    )
+)
+
 REM ── Done ─────────────────────────────────────────────────
 echo.
 echo  ====================================================
-echo   Installation Complete!  ^|  NovoForm v1.1
+echo   Installation Complete!  ^|  NovoForm v1.3
 echo.
 echo   To launch NovoForm:
 echo     Option 1 : Double-click "NovoForm" on your Desktop

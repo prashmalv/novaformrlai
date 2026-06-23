@@ -2,16 +2,20 @@
 NovoForm — Authentication & Audit Manager
 SQLite-backed user store + audit log.  No external dependencies.
 
-DB        : <app>/data/novoform_auth.db          (shared, all users)
-Text logs : <OS AppData>/NovoForm/logs/<username>/YYYY-MM-DD.txt
-            Windows : %APPDATA%\\NovoForm\\logs\\<username>\\
-            macOS   : ~/Library/Application Support/NovoForm/logs/<username>/
-            Linux   : ~/.novoform/logs/<username>/
-            → hidden from regular users; readable by admin via Admin Panel
+DB path resolution (in priority order):
+  1. config/api_config.json → "central_db_path"  (set by admin to a shared LAN folder)
+  2. data/novoform_auth.db  (local fallback / admin's own machine)
+
+Text logs : <OS AppData>/NovoForm/logs/<username>/YYYY-MM-DD.txt  (always local per machine)
+
+Setting "central_db_path" on every employee machine makes the admin the central authority:
+  Windows UNC : \\\\ADMIN-PC\\NovoFormDB\\novoform_auth.db
+  Mapped drive: Z:\\novoform_auth.db
 """
 import csv
 import hashlib
 import io
+import json
 import os
 import secrets
 import socket
@@ -20,7 +24,59 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-_DB_PATH = Path(__file__).parent.parent.parent / "data" / "novoform_auth.db"
+_APP_ROOT   = Path(__file__).parent.parent.parent
+_LOCAL_DB   = _APP_ROOT / "data" / "novoform_auth.db"
+_API_CONFIG = _APP_ROOT / "config" / "api_config.json"
+
+
+def _get_db_path() -> Path:
+    """Return central DB path if configured, else local path."""
+    try:
+        if _API_CONFIG.exists():
+            cfg = json.loads(_API_CONFIG.read_text())
+            central = cfg.get("central_db_path", "").strip()
+            if central:
+                return Path(central)
+    except Exception:
+        pass
+    return _LOCAL_DB
+
+
+def get_db_location() -> dict:
+    """Return info about the current DB path (used by admin panel UI)."""
+    path = _get_db_path()
+    is_central = path != _LOCAL_DB
+    return {
+        "path":       str(path),
+        "is_central": is_central,
+        "reachable":  path.exists() or path.parent.exists(),
+        "label":      "Central (shared)" if is_central else "Local (this machine only)",
+    }
+
+
+def set_central_db_path(new_path: str) -> tuple[bool, str]:
+    """
+    Save a new central_db_path to api_config.json.
+    Pass empty string to revert to local DB.
+    """
+    new_path = new_path.strip()
+    if new_path:
+        p = Path(new_path)
+        if not p.parent.exists():
+            return False, f"Folder not found: {p.parent}"
+    try:
+        _API_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        existing = {}
+        if _API_CONFIG.exists():
+            try:
+                existing = json.loads(_API_CONFIG.read_text())
+            except Exception:
+                pass
+        existing["central_db_path"] = new_path
+        _API_CONFIG.write_text(json.dumps(existing, indent=2))
+        return True, "Saved. Restart the application to apply." if new_path else "Reverted to local database."
+    except Exception as e:
+        return False, str(e)
 
 
 def _appdata_logs_root() -> Path:
@@ -55,8 +111,9 @@ def _new_salt() -> str:
 
 
 def _conn() -> sqlite3.Connection:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(_DB_PATH))
+    db = _get_db_path()
+    db.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db))
     con.row_factory = sqlite3.Row
     return con
 
