@@ -2,30 +2,27 @@
 REM ============================================================
 REM  NovoForm — Windows Installation Script
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.3 — Formwork DXF Drawing Generator (June 2026)
+REM  Version: 1.4 — Nova Drawing v2 Parser (June 2026)
 REM  Developed by RLAI (rightleft.ai)
 REM
-REM  What's new in v1.3:
-REM    - Export Formwork Drawing as AutoCAD DXF (NEW)
-REM      Opens in AutoCAD, FreeCAD, LibreCAD
-REM      Contains: panel layout, OC corners, wallers,
-REM      tierods, BOQ table, title block (all layers)
-REM    - "Add Missing Element" in Review Dialog
-REM      Manually add columns/walls not detected in drawing
-REM    - DXF Arrange Dialog: set element order before export
-REM      Up/Down reorder, manually added shown in green
-REM    - Shared database setup via Admin Panel
-REM      Central DB path for multi-machine LAN use
-REM    - API key secured: not shipped in ZIP
+REM  What's new in v1.4:
+REM    - Nova Drawing v2 Auto-Detection (KEY FEATURE)
+REM      Import DXF with labelled panels (COL:-LxW, FF-COL, R-COL, L-COL)
+REM      App reads panel quantities DIRECTLY from drawing — no optimization needed
+REM      100% accurate: exactly what engineer drew is what you get
+REM    - Casting Height vs Product Height separated
+REM      Header: "Height: 2470MM" = pour height
+REM      Product: "Panel 600*3200" = physical panel supplied
+REM    - HTTP Server mode for central auth (no Windows credentials)
+REM      Run start_server.bat on admin machine
+REM      Workers connect via http://192.168.1.X:8765
+REM    - Server URL config in Admin Panel -> Database Settings
 REM
-REM  What was new in v1.2:
-REM    - Panel catalog from StandardProductList.xlsx (official)
-REM      Standard heights: 3705 / 2470 / 1235mm ONLY
-REM    - Non-standard panels highlighted orange in BOQ output
-REM    - Auto-detect panel height from DXF drawing text
-REM    - Import Settings screen before element review
-REM    - Change panel height -> BOQ updates live (no re-upload)
-REM    - 21 non-catalog widths removed from optimizer
+REM  What was new in v1.3:
+REM    - Export Formwork Drawing as AutoCAD DXF
+REM    - "Add Missing Element" in Review Dialog
+REM    - DXF Arrange Dialog: set element order before export
+REM    - Shared database setup via Admin Panel
 REM
 REM  Usage: Double-click this file on any Windows machine.
 REM  Requires Python 3.10+ installed and in PATH.

@@ -27,6 +27,7 @@ from src.output.excel_generator import generate_excel_boq
 from src.parsers.dwg_parser import (
     parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf,
     parse_dxf_full, parse_dwg_full, detect_panel_height,
+    is_nova_drawing, parse_nova_drawing,
 )
 from src.parsers.pdf_parser import (
     render_pdf_page, get_page_count, extract_title_block,
@@ -1126,6 +1127,34 @@ class _DXFParserWorker(QThread):
                 self.finished.emit((detected, bboxes, polylines, scale, err, dxf_path))
         except Exception as ex:
             self.finished.emit(([], [], [], 1.0, str(ex), ""))
+
+
+# ---------- Nova Drawing v2 parser worker ----------
+
+class _NovaDrawingWorker(QThread):
+    """
+    Background worker for Nova's labelled-panel DXF format.
+    Returns (elements, boqs, error) — BOQs are pre-computed from drawing labels,
+    so no separate optimization step is needed.
+    """
+    finished = pyqtSignal(object)   # emits (elements, boqs, error)
+
+    def __init__(self, path: str, casting_h: float, product_h: float, parent=None):
+        super().__init__(parent)
+        self._path      = path
+        self._casting_h = casting_h
+        self._product_h = product_h
+
+    def run(self):
+        try:
+            elements, boqs, error = parse_nova_drawing(
+                self._path,
+                casting_height_mm=self._casting_h,
+                product_height_mm=self._product_h,
+            )
+            self.finished.emit((elements, boqs, error))
+        except Exception as ex:
+            self.finished.emit(([], [], str(ex)))
 
 
 # ---------- Main Window ----------
@@ -2237,9 +2266,96 @@ class MainWindow(QMainWindow):
                 f"Tip: change panel height in Configuration → BOQ updates instantly."
             )
 
-        # Start background worker
-        self._dwg_worker = _DXFParserWorker(path, panel_h, casting_h, parent=self)
-        self._dwg_worker.finished.connect(_on_parse_done)
+        def _on_nova_parse_done(result):
+            """Handler for Nova labelled-panel DXF — BOQs already computed from drawing."""
+            progress.close()
+            elements, boqs, error = result
+
+            if error:
+                QMessageBox.critical(self, "Import Error", error)
+                return
+
+            if not elements:
+                QMessageBox.information(
+                    self, "No Elements Found",
+                    "No labelled column elements were found in this drawing.\n\n"
+                    "Expected labels: 'COL:-LxW', 'FF-COL LxW', 'R-COL LxW' etc.\n\n"
+                    "Try the standard import or add elements manually."
+                )
+                return
+
+            # Replace existing project if user confirms
+            if self._elements:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Nova Drawing Import")
+                msg.setIcon(QMessageBox.Icon.Question)
+                msg.setText(
+                    f"<b>{len(elements)} element(s) found in Nova drawing.</b><br><br>"
+                    f"This project currently has <b>{len(self._elements)} existing "
+                    f"element(s)</b>.<br>What would you like to do?"
+                )
+                replace_btn = msg.addButton(
+                    "Replace All  (recommended)", QMessageBox.ButtonRole.AcceptRole)
+                add_btn     = msg.addButton(
+                    "Add to Existing", QMessageBox.ButtonRole.AcceptRole)
+                cancel_btn  = msg.addButton(
+                    "Cancel", QMessageBox.ButtonRole.RejectRole)
+                msg.exec()
+                clicked = msg.clickedButton()
+                if clicked == cancel_btn:
+                    return
+                if clicked == replace_btn:
+                    self._elements.clear()
+                    self._boqs.clear()
+                    self._acc_boqs.clear()
+                    self._project    = ProjectBOQ()
+                    self._agg        = None
+                    self._acc_agg    = None
+                    self._refresh_element_table()
+
+            # Add elements and pre-computed BOQs directly — no optimization needed
+            added_nova = 0
+            for elem, boq in zip(elements, boqs):
+                existing_labels = [e.label for e in self._elements]
+                if elem.label in existing_labels:
+                    elem.label = elem.label + "_dwg"
+                self._elements.append(elem)
+                self._boqs.append(boq)
+                added_nova += 1
+
+            # Update project BOQ header
+            self._project = ProjectBOQ(
+                project_name=self.project_name_edit.text().strip(),
+                client_name=self.client_name_edit.text().strip(),
+                panel_height_mm=panel_h,
+                element_boqs=list(self._boqs),
+            )
+
+            self._refresh_element_table()
+            self.tabs.setCurrentIndex(1)  # jump to Elements tab
+
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "NOVA_DXF_IMPORT",
+                 f"{added_nova} elements (BOQ from drawing) from: {Path(path).name}")
+
+            QMessageBox.information(
+                self, "Nova Drawing Import Complete",
+                f"✓  {added_nova} element(s) imported.\n\n"
+                f"Panel quantities read directly from the drawing — no optimization needed.\n\n"
+                f"Casting height : {int(casting_h)} mm\n"
+                f"Product panels : {int(panel_h)} mm\n\n"
+                f"Go to Configuration tab → Generate BOQ to create the output."
+            )
+
+        # ── Detect Nova labelled-panel format and route to correct worker ────
+        if path.lower().endswith('.dxf') and is_nova_drawing(path):
+            self._dwg_worker = _NovaDrawingWorker(
+                path, casting_h, panel_h, parent=self)
+            self._dwg_worker.finished.connect(_on_nova_parse_done)
+        else:
+            self._dwg_worker = _DXFParserWorker(path, panel_h, casting_h, parent=self)
+            self._dwg_worker.finished.connect(_on_parse_done)
         self._dwg_worker.start()
 
     def _run_optimization(self):
