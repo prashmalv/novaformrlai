@@ -2,10 +2,10 @@
 REM ============================================================
 REM  NovoForm — Windows Installation Script
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.4 — Nova Drawing v2 Parser (June 2026)
+REM  Version: 1.5 — Parser Fixes: L-COL, R-COL, IC Corners (June 2026)
 REM  Developed by RLAI (rightleft.ai)
 REM
-REM  What's new in v1.4:
+REM  What's new in v1.5:
 REM    - Nova Drawing v2 Auto-Detection (KEY FEATURE)
 REM      Import DXF with labelled panels (COL:-LxW, FF-COL, R-COL, L-COL)
 REM      App reads panel quantities DIRECTLY from drawing — no optimization needed
@@ -39,17 +39,17 @@ set APP_DIR=%~dp0
 if "%APP_DIR:~-1%"=="\" set APP_DIR=%APP_DIR:~0,-1%
 cd /d "%APP_DIR%"
 
-title NovoForm v1.4 Installer — Nova Formworks
+title NovoForm v1.5 Installer — Nova Formworks
 
 echo.
 echo  ====================================================
 echo   NovoForm — Formwork Analysis and BOQ Generator
-echo   Version 1.4  ^|  Nova Formworks Pvt. Ltd.
+echo   Version 1.5  ^|  Nova Formworks Pvt. Ltd.
 echo   Nova Drawing v2 Parser  ^|  June 2026
 echo   Developed by RLAI (rightleft.ai)
 echo  ====================================================
 echo.
-echo   What's new in v1.4:
+echo   What's new in v1.5:
 echo     - Nova Drawing v2 Parser (KEY FEATURE)
 echo       Import labelled DXF: panel quantities read
 echo       directly from drawing — 100% accurate
@@ -184,7 +184,7 @@ if not exist "%APP_DIR%\config\api_config.json" (
 REM ── Done ─────────────────────────────────────────────────
 echo.
 echo  ====================================================
-echo   Installation Complete!  ^|  NovoForm v1.4
+echo   Installation Complete!  ^|  NovoForm v1.5
 echo.
 echo   To launch NovoForm:
 echo     Option 1 : Double-click "NovoForm" on your Desktop
