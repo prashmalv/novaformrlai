@@ -1069,7 +1069,10 @@ def detect_panel_height(dxf_path: str) -> int | None:
             if ent.dxftype() == 'TEXT':
                 text = ent.dxf.text
             elif ent.dxftype() == 'MTEXT':
-                text = ent.plain_mtext()
+                try:
+                    text = ent.plain_text()
+                except Exception:
+                    text = ent.text
             else:
                 continue
             text_up = text.upper()
@@ -1141,13 +1144,15 @@ def parse_dwg_full(
 def is_nova_drawing(dxf_path: str) -> bool:
     """
     Quick check — does this DXF use Nova's labelled-panel format?
-    Scans only TEXT entities (fast). Returns True if at least one
-    label like 'COL:-', 'FF-COL', 'GF-COL', 'R-COL' etc. is found.
+    Scans only TEXT/MTEXT entities (fast). Returns True if at least one
+    label like 'COL:-', 'FF-COL', 'GF-COL', 'R-COL', 'L-COL:-(...)+(...)'
+    is found.
     """
     if not EZDXF_OK:
         return False
     _QUICK_RE = re.compile(
-        r'(?:FF|GF|SF|B1|B2|TF|RF)?[-\s]*(?:R[-\s]*)?(?:L[-\s]*)?COL[:\-\s]+\d+\s*[xX]\s*\d+',
+        r'(?:FF|GF|SF|B1|B2|TF|RF)?[-\s]*(?:R[-\s]*)?(?:L[-\s]*)?COL'
+        r'(?:[:\-\s]+(?:Ø|%%[Cc])?\d|[:\-\s]*\()',  # digits or ( for L-COL paren
         re.IGNORECASE,
     )
     try:
@@ -1155,13 +1160,18 @@ def is_nova_drawing(dxf_path: str) -> bool:
         msp = doc.modelspace()
         for e in msp.query("TEXT"):
             try:
-                if _QUICK_RE.search(e.dxf.text):
+                t = _normalize_dxf_codes(e.dxf.text)
+                if _QUICK_RE.search(t):
                     return True
             except Exception:
                 pass
         for e in msp.query("MTEXT"):
             try:
-                txt = e.plain_text()
+                try:
+                    txt = e.plain_text()
+                except Exception:
+                    txt = e.text
+                txt = _normalize_dxf_codes(txt)
                 if _QUICK_RE.search(txt):
                     return True
             except Exception:
@@ -1175,11 +1185,30 @@ _NOVA_LABEL_RE = re.compile(
     r'(?:(FF|GF|SF|B1|B2|TF|RF)[-\s]*)?'      # optional floor prefix
     r'(R[-\s]*COL|L[-\s]*COL|COL)'             # element type
     r'[:\-\s]+'                                 # separator (colon, dash, space)
+    r'[Ø\s]*'                                   # optional Ø (R-COL diameter symbol)
     r'(\d+)\s*[xX]\s*(\d+)',                    # WxD dimensions
     re.IGNORECASE,
 )
 
+# L-shaped column format: L-COL:-(400X3000)+(400X1500)
+_L_COL_RE = re.compile(
+    r'(?:(FF|GF|SF|B1|B2|TF|RF)[-\s]*)?'      # optional floor prefix
+    r'L[-\s]*COL[:\-\s]*'                       # L-COL + separator
+    r'\((\d+)\s*[xX]\s*(\d+)\)'               # (W1xH1)  first leg
+    r'\s*\+\s*'                                # +
+    r'\((\d+)\s*[xX]\s*(\d+)\)',              # (W2xH2)  second leg
+    re.IGNORECASE,
+)
+
 _NOVA_WxH_RE = re.compile(r'^(\d+)[xX](\d+)$')  # e.g. "300X2470"
+
+
+def _normalize_dxf_codes(t: str) -> str:
+    """Replace AutoCAD control codes with readable characters."""
+    t = re.sub(r'%%[Cc]', 'Ø', t)  # diameter symbol
+    t = re.sub(r'%%[Dd]', '°', t)  # degree
+    t = re.sub(r'%%[Pp]', '±', t)  # plus-minus
+    return t
 
 
 def _collect_texts(msp) -> list[tuple[float, float, str]]:
@@ -1187,18 +1216,20 @@ def _collect_texts(msp) -> list[tuple[float, float, str]]:
     out = []
     for e in msp.query("TEXT"):
         try:
-            out.append((e.dxf.insert.x, e.dxf.insert.y, e.dxf.text.strip()))
+            txt = _normalize_dxf_codes(e.dxf.text).strip()
+            out.append((e.dxf.insert.x, e.dxf.insert.y, txt))
         except Exception:
             pass
     for e in msp.query("MTEXT"):
         try:
-            txt = e.plain_text().strip()
-        except Exception:
             try:
-                txt = e.text.strip()
+                txt = e.plain_text().strip()
             except Exception:
-                continue
-        try:
+                try:
+                    txt = e.text.strip()
+                except Exception:
+                    continue
+            txt = _normalize_dxf_codes(txt)
             out.append((e.dxf.insert.x, e.dxf.insert.y, txt))
         except Exception:
             pass
@@ -1226,6 +1257,7 @@ def _collect_polylines(msp) -> list[dict]:
                 'cx': (x0 + x1) / 2,
                 'cy': (y0 + y1) / 2,
                 'closed': e.is_closed,
+                'verts': len(pts),   # vertex count: 4=rect, 6/8=L-shape
             })
         except Exception:
             pass
@@ -1260,48 +1292,66 @@ def _panels_around_column(
     Find all 80mm-thick rectangles adjacent to `col`, read their panel widths
     from nearby MTEXT, and return a deduplicated list of PanelEntry objects.
 
-    casting_height_mm : actual pour height of the column/wall (stored on element,
-                        shown in 'Client Requirement' header row of the BOQ)
-    product_height_mm : physical panel size supplied by Nova (used in product label,
-                        e.g. 3200 even when casting height is 2470)
+    casting_height_mm : actual pour height (stored on element, shown in BOQ header)
+    product_height_mm : physical panel height Nova supplies (e.g. 3200 for 2470 pour)
     """
-    PT = 95       # panel thickness tolerance (80mm + 15 wiggle room)
-    BUF = PT + 25  # how far outside the column outline to look
+    PT        = 95   # panel thickness tolerance (80mm nominal + 15mm wiggle)
+    BUF       = PT + 25  # look this far outside column outline
+    MIN_THICK = 30   # annotation/dimension lines thinner than this → skip
+    MAX_WIDTH = 650  # single flat panel max width (600mm + tolerance) → skip longer
 
     oc_qty = 0
-    flat_widths: list[int] = []  # one entry per panel face
+    ic_qty = 0
+    flat_widths: list[int] = []
 
     for p in polylines:
         if p is col:
             continue
         pw, ph = p['w'], p['h']
-        if min(pw, ph) > PT:
-            continue  # not a panel-thin rectangle
 
-        # Must be adjacent to column outline
+        # Must be panel-thin (one dimension ≤ PT = 95mm)
+        if min(pw, ph) > PT:
+            continue
+
+        # Skip annotation/dimension lines (too thin — typically 1–20mm)
+        if min(pw, ph) < MIN_THICK:
+            continue
+
+        # Skip outer bounding-box frame lines (too long to be a single panel)
+        if max(pw, ph) > MAX_WIDTH:
+            continue
+
+        # Must be adjacent to column outline (within BUF of its bounding box)
         pcx, pcy = p['cx'], p['cy']
         if not (col['x0'] - BUF <= pcx <= col['x1'] + BUF and
                 col['y0'] - BUF <= pcy <= col['y1'] + BUF):
             continue
 
-        # OC corner: both dimensions ≤ PT
+        # OC corner: both dimensions ≤ PT (≈ 80×80 square)
         if pw <= PT and ph <= PT:
             oc_qty += 1
             continue
 
-        # Read panel width from nearest MTEXT
+        # Flat panel — read width from nearest numeric MTEXT
         lbl = _nearest_numeric_text(pcx, pcy, texts)
         if lbl:
             m = _NOVA_WxH_RE.match(lbl)
             if m:
-                flat_widths.append(int(m.group(1)))  # take width part of WxH
+                flat_widths.append(int(m.group(1)))  # width part of WxH label
             else:
                 flat_widths.append(int(lbl))
         else:
-            # Fallback: use the long dimension of the panel polyline
-            flat_widths.append(round(max(pw, ph)))
+            flat_widths.append(round(max(pw, ph)))   # fallback: measured dimension
 
-    # Deduplicate flat panels into PanelEntry list
+    # IC (Inner Corner) detection — look for "IC" MTEXT inside/near the column outline
+    for tx, ty, t in texts:
+        if t.strip().upper() != 'IC':
+            continue
+        if (col['x0'] - 200 <= tx <= col['x1'] + 200 and
+                col['y0'] - 200 <= ty <= col['y1'] + 200):
+            ic_qty += 1
+            break  # one IC per L-shaped column
+
     from collections import Counter
     width_counts = Counter(flat_widths)
 
@@ -1310,17 +1360,60 @@ def _panels_around_column(
         entries.append(PanelEntry(
             size_label=f"OC80X{int(product_height_mm)}",
             width_mm=80.0,
-            height_mm=product_height_mm,  # physical panel size
+            height_mm=product_height_mm,
             quantity=oc_qty,
             is_corner=True,
         ))
-    # Sort by width descending (largest first — Nova convention)
+    if ic_qty:
+        entries.append(PanelEntry(
+            size_label=f"IC100X{int(product_height_mm)}",
+            width_mm=100.0,
+            height_mm=product_height_mm,
+            quantity=ic_qty,
+            is_corner=True,
+            is_inner_corner=True,
+        ))
     for w in sorted(width_counts.keys(), reverse=True):
         entries.append(PanelEntry(
             size_label=f"{w}X{int(product_height_mm)}",
             width_mm=float(w),
-            height_mm=product_height_mm,  # physical panel size
+            height_mm=product_height_mm,
             quantity=width_counts[w],
+            is_corner=False,
+        ))
+    return entries
+
+
+def _rcol_panels_from_elev(
+    lx: float, ly: float,
+    texts: list[tuple[float, float, str]],
+    product_height_mm: float,
+    search_radius: float = 3000.0,
+) -> list[PanelEntry]:
+    """
+    For round columns (R-COL) the plan view is a circle with no flat panels.
+    The engineer labels panel sizes as WxH MTEXT in the elevation view nearby.
+    Collect those WxH labels and return them as PanelEntry objects.
+    """
+    from collections import Counter
+    wh_found: list[tuple[int, int]] = []
+    for tx, ty, t in texts:
+        m = _NOVA_WxH_RE.match(t.strip())
+        if not m:
+            continue
+        d = math.hypot(tx - lx, ty - ly)
+        if d <= search_radius:
+            wh_found.append((int(m.group(1)), int(m.group(2))))
+    if not wh_found:
+        return []
+    wh_counts = Counter(wh_found)
+    entries: list[PanelEntry] = []
+    for (w, h), qty in sorted(wh_counts.items(), key=lambda x: -x[0][0]):
+        entries.append(PanelEntry(
+            size_label=f"{w}X{h}",
+            width_mm=float(w),
+            height_mm=float(h),
+            quantity=qty,
             is_corner=False,
         ))
     return entries
@@ -1334,22 +1427,19 @@ def parse_nova_drawing(
     """
     Parse Nova's new labelled-panel DXF format.
 
-    Each column is drawn in plan-view (or elevation for R-Col) with:
-    • A TEXT label below: e.g.  'COL:-1500X800',  'FF-COL 600x900',  'R-COL 1200x2470'
-    • 80mm-thick panel rectangles around the column outline
-    • MTEXT values inside each panel rect showing the panel width (or WxH for R-Col)
+    Supports:
+    • Regular columns : GF-COL:-900X1500,  FF-COL:-600X900,  COL:-1200X800
+    • Round columns   : R-COL:-Ø1200X2470  (WxH labels in nearby elevation view)
+    • L-shaped columns: L-COL:-(400X3000)+(400X1500)  (8-vertex outline polyline)
 
     Args:
         dxf_path          : Path to the DXF file.
-        casting_height_mm : Column/wall pour height shown in the 'Client Requirement'
-                            header of the BOQ (e.g. 2470mm = how tall the pour is).
-        product_height_mm : Physical panel height that Nova supplies (e.g. 3200mm).
-                            This is what appears in the product label: "Panel 600*3200".
-                            Defaults to 3200 — Nova's standard inventory panel height.
+        casting_height_mm : Pour height shown in BOQ header (e.g. 2470mm).
+        product_height_mm : Physical panel height Nova supplies (e.g. 3200mm).
 
     Returns:
-        elements : list[StructuralElement]   (element.height_mm = casting_height_mm)
-        boqs     : list[ElementBOQ]          (panel labels use product_height_mm)
+        elements : list[StructuralElement]  (element.height_mm = casting_height_mm)
+        boqs     : list[ElementBOQ]         (panel size_labels use product_height_mm)
         error    : error string or None
     """
     if not EZDXF_OK:
@@ -1365,117 +1455,181 @@ def parse_nova_drawing(
     except Exception as e:
         return [], [], f"Cannot read modelspace: {e}"
 
-    texts = _collect_texts(msp)
+    texts     = _collect_texts(msp)
     polylines = _collect_polylines(msp)
 
     if not texts:
         return [], [], "No text entities found — is this a Nova labelled drawing?"
 
-    # ── Step 1: find all column labels ───────────────────────────────────────
+    # ── Step 1: collect all column labels ────────────────────────────────────
     col_labels: list[dict] = []
+    seen_pos: set[tuple[int, int]] = set()  # deduplicate duplicate TEXT entities
+
     for tx, ty, txt in texts:
+        pos_key = (round(tx), round(ty))
+        if pos_key in seen_pos:
+            continue
+
+        # L-COL parentheses format first: L-COL:-(400X3000)+(400X1500)
+        m2 = _L_COL_RE.search(txt)
+        if m2:
+            floor_str = (m2.group(1) or "").upper()
+            leg1_w, leg1_h = int(m2.group(2)), int(m2.group(3))
+            leg2_w, leg2_h = int(m2.group(4)), int(m2.group(5))
+            seen_pos.add(pos_key)
+            col_labels.append({
+                'x': tx, 'y': ty, 'raw_text': txt,
+                'floor': floor_str, 'etype': 'LCOL',
+                'is_lcol_paren': True,
+                'leg1_w': leg1_w, 'leg1_h': leg1_h,
+                'leg2_w': leg2_w, 'leg2_h': leg2_h,
+                'dim1': max(leg1_w, leg1_h, leg2_w, leg2_h),
+                'dim2': min(leg1_w, leg2_w),
+            })
+            continue
+
+        # Regular / R-COL / plain L-COL format
         m = _NOVA_LABEL_RE.search(txt)
         if not m:
             continue
-        floor_str  = (m.group(1) or "").upper()
-        etype_raw  = m.group(2).upper().replace(" ", "").replace("-", "")  # COL/RCOL/LCOL
-        dim1       = int(m.group(3))
-        dim2       = int(m.group(4))
+        floor_str = (m.group(1) or "").upper()
+        etype_raw = m.group(2).upper().replace(" ", "").replace("-", "")
+        dim1 = int(m.group(3))
+        dim2 = int(m.group(4))
+        seen_pos.add(pos_key)
         col_labels.append({
             'x': tx, 'y': ty, 'raw_text': txt,
             'floor': floor_str, 'etype': etype_raw,
+            'is_lcol_paren': False,
             'dim1': dim1, 'dim2': dim2,
         })
 
     if not col_labels:
         return [], [], (
             "No column labels found.\n"
-            "Expected format: 'COL:-LxW',  'FF-COL 600x900',  'R-COL 1200x2470'\n"
-            f"Found text entities: {[t for _,_,t in texts[:10]]}"
+            "Expected formats: 'COL:-LxW', 'FF-COL 600x900', "
+            "'R-COL:-Ø1200X2470', 'L-COL:-(400X3000)+(400X1500)'\n"
+            f"Sample texts found: {[t for _, _, t in texts[:10]]}"
         )
 
-    # ── Step 2: for each label, find matching column outline above it ─────────
+    # ── Step 2: for each label, find column outline and read panels ───────────
     elements: list[StructuralElement] = []
-    boqs: list[ElementBOQ] = []
+    boqs:     list[ElementBOQ] = []
 
-    for idx, lbl in enumerate(col_labels, start=1):
-        lx, ly     = lbl['x'], lbl['y']
-        dim1, dim2 = lbl['dim1'], lbl['dim2']
-        floor_str  = lbl['floor']
-        etype_raw  = lbl['etype']
+    for lbl in col_labels:
+        lx, ly    = lbl['x'], lbl['y']
+        dim1      = lbl['dim1']
+        dim2      = lbl['dim2']
+        floor_str = lbl['floor']
+        etype_raw = lbl['etype']
+        is_lcol   = lbl.get('is_lcol_paren', False)
+        tol       = 0.20  # 20 % dimensional tolerance for outline matching
 
-        # Find nearest large closed polyline above (or near) the label
+        # ── Find best matching column outline polyline ────────────────────
         best_col: dict | None = None
-        best_dist = float('inf')
-        tol = 0.20  # 20 % dimensional tolerance
+        best_score = float('inf')
 
         for p in polylines:
             if not p['closed']:
                 continue
             if p['w'] < 150 or p['h'] < 150:
-                continue  # too small to be a column outline
-            # Prefer polylines above the label text
-            if p['cy'] < ly - 500:
                 continue
-            # Optionally check dimension match
+            if p['cy'] < ly - 500:  # outline must be above (or near) the label
+                continue
+
             pw, ph = p['w'], p['h']
-            dim_ok = (
-                (abs(pw - dim1) / max(dim1, 1) < tol and abs(ph - dim2) / max(dim2, 1) < tol) or
-                (abs(pw - dim2) / max(dim2, 1) < tol and abs(ph - dim1) / max(dim1, 1) < tol)
-            )
-            dist = math.hypot(p['cx'] - lx, p['cy'] - ly)
-            # Prefer dim-matching; fall back to nearest
-            score = dist if dim_ok else dist + 50000
-            if score < best_dist:
-                best_dist = score
+            verts  = p.get('verts', 4)
+            dist   = math.hypot(p['cx'] - lx, p['cy'] - ly)
+
+            if is_lcol:
+                # L-shaped columns: strongly prefer 6+ vertex polylines
+                score = dist if verts >= 6 else dist + 10000
+            else:
+                dim_ok = (
+                    (abs(pw - dim1) / max(dim1, 1) < tol and
+                     abs(ph - dim2) / max(dim2, 1) < tol) or
+                    (abs(pw - dim2) / max(dim2, 1) < tol and
+                     abs(ph - dim1) / max(dim1, 1) < tol)
+                )
+                score = dist if dim_ok else dist + 50000
+
+            if score < best_score:
+                best_score = score
                 best_col = p
 
-        if best_col is None:
-            continue  # cannot associate a column outline — skip
-
-        # ── Determine element type ────────────────────────────────────────────
-        if etype_raw == "RCOL":
-            elem_type = ElementType.COLUMN   # Round — stored as COLUMN with note
+        # ── Build element ─────────────────────────────────────────────────
+        if etype_raw == 'RCOL':
+            elem_type = ElementType.COLUMN
             notes     = "Round column"
-        elif etype_raw == "LCOL":
-            elem_type = ElementType.COLUMN   # L-shaped — stored as COLUMN with note
+            length_mm = float(max(dim1, dim2))
+            width_mm  = float(min(dim1, dim2))
+            label_str = (
+                f"{floor_str + '-' if floor_str else ''}R-COL "
+                f"{int(length_mm)}x{int(width_mm)}"
+            )
+        elif is_lcol:
+            elem_type = ElementType.COLUMN
             notes     = "L-shaped column"
+            leg1_w = lbl['leg1_w']; leg1_h = lbl['leg1_h']
+            leg2_w = lbl['leg2_w']; leg2_h = lbl['leg2_h']
+            if best_col:
+                length_mm = float(max(best_col['w'], best_col['h']))
+                width_mm  = float(min(best_col['w'], best_col['h']))
+            else:
+                length_mm = float(max(leg1_w, leg1_h, leg2_w, leg2_h))
+                width_mm  = float(min(leg1_w, leg2_w))
+            label_str = (
+                f"{floor_str + '-' if floor_str else ''}L-COL "
+                f"({leg1_w}x{leg1_h})+({leg2_w}x{leg2_h})"
+            )
+        elif etype_raw == 'LCOL':
+            elem_type = ElementType.COLUMN
+            notes     = "L-shaped column"
+            length_mm = float(max(dim1, dim2))
+            width_mm  = float(min(dim1, dim2))
+            label_str = (
+                f"{floor_str + '-' if floor_str else ''}L-COL "
+                f"{int(length_mm)}x{int(width_mm)}"
+            )
         else:
             elem_type = ElementType.COLUMN
             notes     = ""
-
-        # Use the longer dimension as length, shorter as width
-        length_mm = float(max(dim1, dim2))
-        width_mm  = float(min(dim1, dim2))
-
-        label_str = (
-            f"{floor_str + '-' if floor_str else ''}"
-            f"{'R-' if etype_raw == 'RCOL' else 'L-' if etype_raw == 'LCOL' else ''}"
-            f"COL {int(length_mm)}x{int(width_mm)}"
-        )
+            length_mm = float(max(dim1, dim2))
+            width_mm  = float(min(dim1, dim2))
+            label_str = (
+                f"{floor_str + '-' if floor_str else ''}COL "
+                f"{int(length_mm)}x{int(width_mm)}"
+            )
 
         elem = StructuralElement(
             element_type=elem_type,
             label=label_str,
             length_mm=length_mm,
             width_mm=width_mm,
-            height_mm=casting_height_mm,   # actual pour height
+            height_mm=casting_height_mm,
             quantity=1,
             notes=notes,
             floor_label=floor_str,
         )
 
-        # ── Read panels from drawing ──────────────────────────────────────────
-        panel_entries = _panels_around_column(
-            best_col, polylines, texts,
-            casting_height_mm=casting_height_mm,
-            product_height_mm=product_height_mm,
-        )
+        # ── Read panels ───────────────────────────────────────────────────
+        if etype_raw == 'RCOL':
+            # Round column: no 80mm plan-view panels; use WxH elevation labels
+            panel_entries = _rcol_panels_from_elev(lx, ly, texts, product_height_mm)
+        elif best_col is not None:
+            panel_entries = _panels_around_column(
+                best_col, polylines, texts,
+                casting_height_mm=casting_height_mm,
+                product_height_mm=product_height_mm,
+            )
+        else:
+            panel_entries = []
 
         if not panel_entries:
-            # No panel rects found — fall through with empty BOQ but still add element
-            boq = ElementBOQ(element=elem, panels=[],
-                             warnings=["No panel rectangles detected around this element"])
+            boq = ElementBOQ(
+                element=elem, panels=[],
+                warnings=["No panel rectangles detected around this element"],
+            )
         else:
             boq = ElementBOQ(element=elem, panels=panel_entries)
 

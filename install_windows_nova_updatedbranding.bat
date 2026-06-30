@@ -39,23 +39,26 @@ set APP_DIR=%~dp0
 if "%APP_DIR:~-1%"=="\" set APP_DIR=%APP_DIR:~0,-1%
 cd /d "%APP_DIR%"
 
-title NovoForm v1.3 Installer — Nova Formworks
+title NovoForm v1.4 Installer — Nova Formworks
 
 echo.
 echo  ====================================================
 echo   NovoForm — Formwork Analysis and BOQ Generator
-echo   Version 1.3  ^|  Nova Formworks Pvt. Ltd.
-echo   Formwork DXF Drawing Generator  ^|  June 2026
+echo   Version 1.4  ^|  Nova Formworks Pvt. Ltd.
+echo   Nova Drawing v2 Parser  ^|  June 2026
 echo   Developed by RLAI (rightleft.ai)
 echo  ====================================================
 echo.
-echo   What's new in v1.3:
-echo     - Export Formwork Drawing as AutoCAD DXF
-echo       (panel layout, OC corners, wallers, tierods,
-echo        BOQ table, title block — all layers)
-echo     - Add Missing Element in Review Dialog
-echo     - DXF Arrange: set element order before export
-echo     - Central shared DB for multi-machine LAN setup
+echo   What's new in v1.4:
+echo     - Nova Drawing v2 Parser (KEY FEATURE)
+echo       Import labelled DXF: panel quantities read
+echo       directly from drawing — 100% accurate
+echo       Supports: Regular, R-COL, L-COL, SF-COL
+echo       L-shaped columns with IC inner-corner panels
+echo     - Panel count fixes: bounding-box filter
+echo       prevents inflated panel counts from frame lines
+echo     - HTTP Server mode for central auth
+echo       Run start_server.bat on admin machine
 echo.
 echo   Default login: admin / nova@123
 echo   (Change password immediately after first login)
@@ -181,7 +184,7 @@ if not exist "%APP_DIR%\config\api_config.json" (
 REM ── Done ─────────────────────────────────────────────────
 echo.
 echo  ====================================================
-echo   Installation Complete!  ^|  NovoForm v1.3
+echo   Installation Complete!  ^|  NovoForm v1.4
 echo.
 echo   To launch NovoForm:
 echo     Option 1 : Double-click "NovoForm" on your Desktop
