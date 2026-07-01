@@ -1181,6 +1181,8 @@ class MainWindow(QMainWindow):
         # Deferred render args — set after import, consumed when user opens that tab
         self._pending_dxf_render_args: dict | None = None
         self._pending_3d_render_args:  dict | None = None
+        self._ph_syncing = False
+        self._is_nova_drawing = False
 
         self._setup_ui()
         self._apply_global_style()
@@ -1301,7 +1303,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.1")
+        version = QLabel("v1.5")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -1630,56 +1632,6 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(grp1)
 
-        # Rate Inputs
-        grp2 = QGroupBox("Rate Inputs (Optional — for cost estimate)")
-        grp2.setStyleSheet(GROUP_STYLE)
-        f2 = QFormLayout(grp2)
-        f2.setSpacing(10)
-
-        self.rate_panel = QDoubleSpinBox()
-        self.rate_panel.setRange(0, 100000)
-        self.rate_panel.setDecimals(2)
-        self.rate_panel.setSuffix(" ₹/sqm")
-        f2.addRow("Panel Rate:", self.rate_panel)
-
-        self.rate_waller = QDoubleSpinBox()
-        self.rate_waller.setRange(0, 10000)
-        self.rate_waller.setDecimals(2)
-        self.rate_waller.setSuffix(" ₹/rm")
-        f2.addRow("Waller Rate:", self.rate_waller)
-
-        self.rate_tierod = QDoubleSpinBox()
-        self.rate_tierod.setRange(0, 10000)
-        self.rate_tierod.setDecimals(2)
-        self.rate_tierod.setSuffix(" ₹/rm")
-        f2.addRow("Tierod Rate:", self.rate_tierod)
-
-        self.rate_prop = QDoubleSpinBox()
-        self.rate_prop.setRange(0, 10000)
-        self.rate_prop.setDecimals(2)
-        self.rate_prop.setSuffix(" ₹/unit")
-        f2.addRow("Prop Rate:", self.rate_prop)
-
-        lay.addWidget(grp2)
-
-        # Additional
-        grp3 = QGroupBox("Additional Charges")
-        grp3.setStyleSheet(GROUP_STYLE)
-        f3 = QFormLayout(grp3)
-        f3.setSpacing(10)
-
-        self.gst_check = QCheckBox("Include GST @ 18%")
-        self.gst_check.setChecked(True)
-        f3.addRow("GST:", self.gst_check)
-
-        self.freight_spin = QDoubleSpinBox()
-        self.freight_spin.setRange(0, 10000000)
-        self.freight_spin.setDecimals(2)
-        self.freight_spin.setSuffix(" ₹")
-        f3.addRow("Freight Charges:", self.freight_spin)
-
-        lay.addWidget(grp3)
-
         # Run button
         btn_run = QPushButton("  ▶  Run Optimization & Generate BOQ")
         btn_run.setStyleSheet(BTN_STYLE)
@@ -1713,6 +1665,50 @@ class MainWindow(QMainWindow):
         hdr_row.addWidget(btn_view_layout)
 
         lay.addLayout(hdr_row)
+
+        # ── Quick Panel Settings bar (synced with Configuration tab) ──────────
+        settings_grp = QGroupBox("Panel Settings")
+        settings_grp.setStyleSheet(GROUP_STYLE)
+        settings_row = QHBoxLayout(settings_grp)
+        settings_row.setSpacing(10)
+        settings_row.setContentsMargins(10, 6, 10, 6)
+
+        settings_row.addWidget(QLabel("Panel Height (mm):"))
+        self.boq_ph_combo = QComboBox()
+        self.boq_ph_combo.addItems(_PANEL_HEIGHT_OPTIONS)
+        self.boq_ph_combo.setCurrentText("3200")
+        self.boq_ph_combo.setFixedWidth(100)
+        self.boq_ph_combo.currentIndexChanged.connect(self._boq_ph_changed)
+        settings_row.addWidget(self.boq_ph_combo)
+
+        settings_row.addSpacing(8)
+        settings_row.addWidget(QLabel("Casting Height (mm):"))
+        self.boq_ch_combo = QComboBox()
+        self.boq_ch_combo.addItems(["3200", "3000", "2700", "2470", "2400", "2100", "1800", "1500"])
+        self.boq_ch_combo.setCurrentText("3200")
+        self.boq_ch_combo.setEditable(True)
+        self.boq_ch_combo.setFixedWidth(100)
+        self.boq_ch_combo.currentIndexChanged.connect(self._boq_ch_changed)
+        settings_row.addWidget(self.boq_ch_combo)
+
+        settings_row.addSpacing(8)
+        settings_row.addWidget(QLabel("Sets:"))
+        self.boq_sets_spin = QSpinBox()
+        self.boq_sets_spin.setRange(1, 100)
+        self.boq_sets_spin.setValue(1)
+        self.boq_sets_spin.setFixedWidth(65)
+        self.boq_sets_spin.valueChanged.connect(self._boq_sets_changed)
+        settings_row.addWidget(self.boq_sets_spin)
+
+        settings_row.addStretch()
+
+        btn_refresh_boq = QPushButton("  ▶  Refresh BOQ")
+        btn_refresh_boq.setStyleSheet(BTN_STYLE)
+        btn_refresh_boq.setFixedHeight(28)
+        btn_refresh_boq.clicked.connect(self._run_optimization)
+        settings_row.addWidget(btn_refresh_boq)
+
+        lay.addWidget(settings_grp)
 
         # Non-standard panel warning banner (hidden until BOQ has non-catalog items)
         self.nonstandard_banner = QLabel("")
@@ -1836,6 +1832,59 @@ class MainWindow(QMainWindow):
         lbl = QLabel("Export & Output")
         lbl.setStyleSheet(HEADER_STYLE)
         lay.addWidget(lbl)
+
+        # ── Pricing inputs (Rate Inputs + Additional Charges) ─────────────────
+        pricing_row = QHBoxLayout()
+        pricing_row.setSpacing(12)
+
+        grp_rates = QGroupBox("Rate Inputs (Optional — for cost estimate)")
+        grp_rates.setStyleSheet(GROUP_STYLE)
+        f_rates = QFormLayout(grp_rates)
+        f_rates.setSpacing(8)
+
+        self.rate_panel = QDoubleSpinBox()
+        self.rate_panel.setRange(0, 100000)
+        self.rate_panel.setDecimals(2)
+        self.rate_panel.setSuffix(" ₹/sqm")
+        f_rates.addRow("Panel Rate:", self.rate_panel)
+
+        self.rate_waller = QDoubleSpinBox()
+        self.rate_waller.setRange(0, 10000)
+        self.rate_waller.setDecimals(2)
+        self.rate_waller.setSuffix(" ₹/rm")
+        f_rates.addRow("Waller Rate:", self.rate_waller)
+
+        self.rate_tierod = QDoubleSpinBox()
+        self.rate_tierod.setRange(0, 10000)
+        self.rate_tierod.setDecimals(2)
+        self.rate_tierod.setSuffix(" ₹/rm")
+        f_rates.addRow("Tierod Rate:", self.rate_tierod)
+
+        self.rate_prop = QDoubleSpinBox()
+        self.rate_prop.setRange(0, 10000)
+        self.rate_prop.setDecimals(2)
+        self.rate_prop.setSuffix(" ₹/unit")
+        f_rates.addRow("Prop Rate:", self.rate_prop)
+
+        pricing_row.addWidget(grp_rates)
+
+        grp_charges = QGroupBox("Additional Charges")
+        grp_charges.setStyleSheet(GROUP_STYLE)
+        f_charges = QFormLayout(grp_charges)
+        f_charges.setSpacing(8)
+
+        self.gst_check = QCheckBox("Include GST @ 18%")
+        self.gst_check.setChecked(True)
+        f_charges.addRow("GST:", self.gst_check)
+
+        self.freight_spin = QDoubleSpinBox()
+        self.freight_spin.setRange(0, 10000000)
+        self.freight_spin.setDecimals(2)
+        self.freight_spin.setSuffix(" ₹")
+        f_charges.addRow("Freight Charges:", self.freight_spin)
+
+        pricing_row.addWidget(grp_charges)
+        lay.addLayout(pricing_row)
 
         grp = QGroupBox("Export Options")
         grp.setStyleSheet(GROUP_STYLE)
@@ -2246,9 +2295,10 @@ class MainWindow(QMainWindow):
                     scale    = scale_used,
                 )
 
+            self._is_nova_drawing = False
             self._refresh_element_table()
-            # Switch to Elements tab so user sees results immediately
-            self.tabs.setCurrentIndex(1)
+            self._auto_run_boq_silent()
+            self.tabs.setCurrentIndex(5)  # Jump to BOQ Results tab
 
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
@@ -2258,12 +2308,10 @@ class MainWindow(QMainWindow):
             ph_used = int(self.panel_height_combo.currentText())
             QMessageBox.information(
                 self, "Import Complete",
-                f"✓  {added} element(s) imported from drawing.\n\n"
-                f"Panel height set to: {ph_used} mm\n\n"
-                f"Drawing Preview and 3D View tabs will render\n"
-                f"when you click them (keeps UI fast).\n\n"
-                f"Next: go to Configuration tab → Run Optimization & Generate BOQ.\n"
-                f"Tip: change panel height in Configuration → BOQ updates instantly."
+                f"✓  {added} element(s) imported — BOQ ready.\n\n"
+                f"Panel height: {ph_used} mm\n\n"
+                f"Change Panel Height / Sets in BOQ Results tab to update instantly.\n"
+                f"Drawing Preview and 3D View available in their tabs."
             )
 
         def _on_nova_parse_done(result):
@@ -2331,8 +2379,25 @@ class MainWindow(QMainWindow):
                 element_boqs=list(self._boqs),
             )
 
+            # Set Drawing Preview and 3D View pending args (consumed on tab click)
+            self._pending_dxf_render_args = dict(
+                elements  = list(self._elements[-added_nova:]),
+                bboxes    = None,
+                polylines = None,
+                scale     = 1.0,
+                title     = path,
+                dxf_path  = path,
+            )
+            self._pending_3d_render_args = dict(
+                elements = list(self._elements[-added_nova:]),
+                bboxes   = None,
+                scale    = 1.0,
+            )
+
+            self._is_nova_drawing = True
             self._refresh_element_table()
-            self.tabs.setCurrentIndex(1)  # jump to Elements tab
+            self._auto_run_boq_silent(nova_mode=True)
+            self.tabs.setCurrentIndex(5)  # jump to BOQ Results tab
 
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
@@ -2341,11 +2406,12 @@ class MainWindow(QMainWindow):
 
             QMessageBox.information(
                 self, "Nova Drawing Import Complete",
-                f"✓  {added_nova} element(s) imported.\n\n"
-                f"Panel quantities read directly from the drawing — no optimization needed.\n\n"
+                f"✓  {added_nova} element(s) imported — BOQ ready.\n\n"
+                f"Panel quantities read directly from drawing.\n\n"
                 f"Casting height : {int(casting_h)} mm\n"
                 f"Product panels : {int(panel_h)} mm\n\n"
-                f"Go to Configuration tab → Generate BOQ to create the output."
+                f"Change Panel Height / Sets in the BOQ Results tab to update quantities.\n"
+                f"Drawing Preview and 3D View available in their tabs."
             )
 
         # ── Detect Nova labelled-panel format and route to correct worker ────
@@ -2441,15 +2507,25 @@ class MainWindow(QMainWindow):
         """
         if not self._elements or not self._boqs:
             return
+        # Sync boq_ph_combo to match panel_height_combo
+        if not self._ph_syncing and hasattr(self, 'boq_ph_combo'):
+            self._ph_syncing = True
+            text = self.panel_height_combo.currentText()
+            idx = self.boq_ph_combo.findText(text)
+            if idx >= 0:
+                self.boq_ph_combo.setCurrentIndex(idx)
+            else:
+                self.boq_ph_combo.setCurrentText(text)
+            self._ph_syncing = False
         panel_h = float(self.panel_height_combo.currentText())
-        new_boqs = []
-        for elem in self._elements:
-            try:
-                new_boqs.append(compute_boq(elem, panel_h))
-            except Exception:
-                return  # bail silently on any failure
-
-        self._boqs = new_boqs
+        if not self._is_nova_drawing:
+            new_boqs = []
+            for elem in self._elements:
+                try:
+                    new_boqs.append(compute_boq(elem, panel_h))
+                except Exception:
+                    return  # bail silently on any failure
+            self._boqs = new_boqs
         self._project = ProjectBOQ(
             project_name      = self.project_name_edit.text().strip(),
             client_name       = self.client_name_edit.text().strip(),
@@ -2474,6 +2550,82 @@ class MainWindow(QMainWindow):
             self._elements, self._boqs,
             self._agg, self._acc_agg, self._project)
 
+    def _auto_run_boq_silent(self, nova_mode: bool = False):
+        """Run BOQ computation silently after element import. No dialogs, no tab switch."""
+        if not self._elements:
+            return
+        panel_h = float(self.panel_height_combo.currentText())
+        if not nova_mode:
+            new_boqs = []
+            for elem in self._elements:
+                try:
+                    new_boqs.append(compute_boq(elem, panel_h))
+                except Exception:
+                    return
+            self._boqs = new_boqs
+        if not self._boqs:
+            return
+        self._project = ProjectBOQ(
+            project_name      = self.project_name_edit.text().strip(),
+            client_name       = self.client_name_edit.text().strip(),
+            client_address    = self.client_addr_edit.text().strip(),
+            ipo_no            = self.ipo_edit.text().strip(),
+            date              = self.date_edit.text().strip(),
+            element_boqs      = list(self._boqs),
+            panel_height_mm   = panel_h,
+            num_sets          = self.num_sets_spin.value(),
+            gst_enabled       = self.gst_check.isChecked(),
+            freight_amount    = self.freight_spin.value(),
+            panel_rate_per_sqm= self.rate_panel.value(),
+        )
+        self._agg = aggregate_project_boq(self._project)
+        self._acc_boqs = []
+        for elem, boq in zip(self._elements, self._boqs):
+            self._acc_boqs.append(calculate_accessories(elem, boq, panel_h))
+        self._acc_agg = aggregate_accessories(self._acc_boqs, self.num_sets_spin.value())
+        self._refresh_boq_tables()
+        self.ai_widget.update_data(
+            self._elements, self._boqs,
+            self._agg, self._acc_agg, self._project)
+
+    def _boq_ph_changed(self, idx: int):
+        """Sync BOQ tab panel height → Configuration tab; triggers BOQ recompute."""
+        if self._ph_syncing:
+            return
+        self._ph_syncing = True
+        text = self.boq_ph_combo.currentText()
+        cfg_idx = self.panel_height_combo.findText(text)
+        if cfg_idx >= 0:
+            self.panel_height_combo.setCurrentIndex(cfg_idx)
+        else:
+            self.panel_height_combo.setCurrentText(text)
+        self._ph_syncing = False
+        # panel_height_combo change triggers _regenerate_boq_if_elements_present via signal
+
+    def _boq_ch_changed(self, idx: int):
+        """Sync BOQ tab casting height → Configuration tab."""
+        if self._ph_syncing:
+            return
+        self._ph_syncing = True
+        text = self.boq_ch_combo.currentText()
+        cfg_idx = self.casting_height_combo.findText(text)
+        if cfg_idx >= 0:
+            self.casting_height_combo.setCurrentIndex(cfg_idx)
+        else:
+            self.casting_height_combo.setCurrentText(text)
+        self._ph_syncing = False
+
+    def _boq_sets_changed(self, value: int):
+        """Sync BOQ tab sets spin → Configuration tab; refreshes tables."""
+        if self._ph_syncing:
+            return
+        self._ph_syncing = True
+        self.num_sets_spin.setValue(value)
+        self._ph_syncing = False
+        if self._boqs and self._acc_boqs:
+            self._acc_agg = aggregate_accessories(self._acc_boqs, value)
+            self._refresh_boq_tables()
+
     def _refresh_boq_tables(self):
         if not self._boqs or not self._agg:
             return
@@ -2488,9 +2640,11 @@ class MainWindow(QMainWindow):
         ns_elem_labels: list[str] = []
 
         for eboq in self._boqs:
+            _area = (eboq.element.length_mm * eboq.element.width_mm) / 1_000_000
             elem_lbl = (
                 f"{eboq.element.label} ({eboq.element.element_type.value})\n"
-                f"{eboq.element.length_mm:.0f}×{eboq.element.width_mm:.0f}mm\n"
+                f"{eboq.element.length_mm:.0f}×{eboq.element.width_mm:.0f}mm  "
+                f"Area={_area:.3f}sqm\n"
                 f"H={eboq.element.height_mm:.0f}  Qty={eboq.element.quantity}"
             )
             # Flag this element if ANY of its panels is non-standard
