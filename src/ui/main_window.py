@@ -444,7 +444,7 @@ class DWGReviewDialog(QDialog):
 
 # ---------- Import Settings Confirmation ----------
 
-_PANEL_HEIGHT_OPTIONS = ["3705", "2470", "1235", "3200", "3000"]
+_PANEL_HEIGHT_OPTIONS = sorted(["3705", "2470", "1235", "3200", "3000"], key=int, reverse=True)
 # Standard catalog: 3705, 2470, 1235mm.  3200/3000 kept for non-standard drawings.
 
 
@@ -1228,7 +1228,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_config(),          "  Configuration  ")
         self.tabs.addTab(self._tab_boq(),             "  BOQ Results  ")
         self.tabs.addTab(self._tab_export(),          "  Export  ")
-        self.tabs.addTab(self._tab_ai_assistant(),    "  AI Assistant  ")
+        ai_tab = self._tab_ai_assistant()
+        self.tabs.addTab(ai_tab, "  AI Assistant  ")
+        self.tabs.setTabEnabled(self.tabs.count() - 1, False)
 
         # Lazy rendering: Drawing Preview (2) and 3D View (3) render only on demand
         self.tabs.currentChanged.connect(self._on_tab_changed)
