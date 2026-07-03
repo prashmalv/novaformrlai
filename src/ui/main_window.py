@@ -1311,7 +1311,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.7")
+        version = QLabel("v1.8")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -1665,6 +1665,12 @@ class MainWindow(QMainWindow):
         hdr_row.addWidget(lbl)
         hdr_row.addStretch()
 
+        btn_refresh_boq = QPushButton("  ▶  Refresh BOQ")
+        btn_refresh_boq.setStyleSheet(BTN_STYLE)
+        btn_refresh_boq.setFixedHeight(30)
+        btn_refresh_boq.clicked.connect(self._run_optimization)
+        hdr_row.addWidget(btn_refresh_boq)
+
         btn_view_layout = QPushButton("  View Layout")
         btn_view_layout.setStyleSheet(BTN_SECONDARY)
         btn_view_layout.setFixedHeight(30)
@@ -1678,44 +1684,37 @@ class MainWindow(QMainWindow):
         settings_grp = QGroupBox("Panel Settings")
         settings_grp.setStyleSheet(GROUP_STYLE)
         settings_row = QHBoxLayout(settings_grp)
-        settings_row.setSpacing(10)
-        settings_row.setContentsMargins(10, 6, 10, 6)
+        settings_row.setSpacing(12)
+        settings_row.setContentsMargins(12, 6, 12, 6)
 
         settings_row.addWidget(QLabel("Panel Height (mm):"))
         self.boq_ph_combo = QComboBox()
         self.boq_ph_combo.addItems(_PANEL_HEIGHT_OPTIONS)
         self.boq_ph_combo.setCurrentText("3200")
-        self.boq_ph_combo.setFixedWidth(100)
+        self.boq_ph_combo.setMinimumWidth(90)
         self.boq_ph_combo.currentIndexChanged.connect(self._boq_ph_changed)
         settings_row.addWidget(self.boq_ph_combo)
 
-        settings_row.addSpacing(8)
+        settings_row.addSpacing(16)
         settings_row.addWidget(QLabel("Casting Height (mm):"))
         self.boq_ch_combo = QComboBox()
         self.boq_ch_combo.addItems(_CASTING_HEIGHT_OPTIONS)
         self.boq_ch_combo.setCurrentText("3200")
         self.boq_ch_combo.setEditable(True)
-        self.boq_ch_combo.setFixedWidth(100)
+        self.boq_ch_combo.setMinimumWidth(90)
         self.boq_ch_combo.currentIndexChanged.connect(self._boq_ch_changed)
         settings_row.addWidget(self.boq_ch_combo)
 
-        settings_row.addSpacing(8)
+        settings_row.addSpacing(16)
         settings_row.addWidget(QLabel("Sets:"))
         self.boq_sets_spin = QSpinBox()
         self.boq_sets_spin.setRange(1, 100)
         self.boq_sets_spin.setValue(1)
-        self.boq_sets_spin.setFixedWidth(65)
+        self.boq_sets_spin.setMinimumWidth(60)
         self.boq_sets_spin.valueChanged.connect(self._boq_sets_changed)
         settings_row.addWidget(self.boq_sets_spin)
 
         settings_row.addStretch()
-
-        btn_refresh_boq = QPushButton("  ▶  Refresh BOQ")
-        btn_refresh_boq.setStyleSheet(BTN_STYLE)
-        btn_refresh_boq.setFixedHeight(28)
-        btn_refresh_boq.clicked.connect(self._run_optimization)
-        settings_row.addWidget(btn_refresh_boq)
-
         lay.addWidget(settings_grp)
 
         # Non-standard panel warning banner (hidden until BOQ has non-catalog items)
@@ -2390,15 +2389,15 @@ class MainWindow(QMainWindow):
             # Set Drawing Preview and 3D View pending args (consumed on tab click)
             self._pending_dxf_render_args = dict(
                 elements  = list(self._elements[-added_nova:]),
-                bboxes    = None,
-                polylines = None,
+                bboxes    = [],
+                polylines = [],
                 scale     = 1.0,
                 title     = path,
                 dxf_path  = path,
             )
             self._pending_3d_render_args = dict(
                 elements = list(self._elements[-added_nova:]),
-                bboxes   = None,
+                bboxes   = [],
                 scale    = 1.0,
             )
 
