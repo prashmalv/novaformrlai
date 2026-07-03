@@ -445,6 +445,12 @@ class DWGReviewDialog(QDialog):
 # ---------- Import Settings Confirmation ----------
 
 _PANEL_HEIGHT_OPTIONS = sorted(["3705", "2470", "1235", "3200", "3000"], key=int, reverse=True)
+_CASTING_HEIGHT_OPTIONS = sorted(
+    ["500", "600", "750", "900", "1000", "1235", "1500", "1800",
+     "2100", "2400", "2470", "2700", "3000", "3200", "3500", "3705",
+     "4000", "4500", "5000"],
+    key=int, reverse=True
+)
 # Standard catalog: 3705, 2470, 1235mm.  3200/3000 kept for non-standard drawings.
 
 
@@ -558,8 +564,8 @@ class DXFArrangeDialog(QDialog):
             self.table.setItem(i, 2, QTableWidgetItem(elem.element_type.value))
             # Dimensions
             dims = (
-                f"{elem.length_mm:.0f}×{elem.width_mm:.0f}mm  "
-                f"H={elem.height_mm:.0f}mm  Qty={elem.quantity}"
+                f"{elem.length_mm:.0f}×{elem.width_mm:.0f} mm  "
+                f"H={elem.height_mm:.0f} mm  Qty={elem.quantity}"
             )
             self.table.setItem(i, 3, QTableWidgetItem(dims))
             # Origin: manually added elements have no bbox
@@ -1615,7 +1621,7 @@ class MainWindow(QMainWindow):
         f1.addRow("Panel Height (mm):", self.panel_height_combo)
 
         self.casting_height_combo = QComboBox()
-        self.casting_height_combo.addItems(["3200", "3000", "2700", "2470", "2400", "2100", "1800", "1500"])
+        self.casting_height_combo.addItems(_CASTING_HEIGHT_OPTIONS)
         self.casting_height_combo.setCurrentText("3200")
         self.casting_height_combo.setEditable(True)
         self.casting_height_combo.setMinimumWidth(160)
@@ -1686,7 +1692,7 @@ class MainWindow(QMainWindow):
         settings_row.addSpacing(8)
         settings_row.addWidget(QLabel("Casting Height (mm):"))
         self.boq_ch_combo = QComboBox()
-        self.boq_ch_combo.addItems(["3200", "3000", "2700", "2470", "2400", "2100", "1800", "1500"])
+        self.boq_ch_combo.addItems(_CASTING_HEIGHT_OPTIONS)
         self.boq_ch_combo.setCurrentText("3200")
         self.boq_ch_combo.setEditable(True)
         self.boq_ch_combo.setFixedWidth(100)
@@ -2475,7 +2481,7 @@ class MainWindow(QMainWindow):
              f"Project: {self._project.project_name} | "
              f"{len(self._boqs)} elements | "
              f"{self._agg.get('total_area_sqm', 0):.1f} sqm | "
-             f"Panel: {panel_h:.0f}mm")
+             f"Panel: {panel_h:.0f} mm")
 
         self._refresh_boq_tables()
 
@@ -2642,12 +2648,12 @@ class MainWindow(QMainWindow):
         ns_elem_labels: list[str] = []
 
         for eboq in self._boqs:
-            _area = (eboq.element.length_mm * eboq.element.width_mm) / 1_000_000
+            _panel_area = eboq.total_panel_area_sqm
             elem_lbl = (
                 f"{eboq.element.label} ({eboq.element.element_type.value})\n"
-                f"{eboq.element.length_mm:.0f}×{eboq.element.width_mm:.0f}mm  "
-                f"Area={_area:.3f}sqm\n"
-                f"H={eboq.element.height_mm:.0f}  Qty={eboq.element.quantity}"
+                f"{eboq.element.length_mm:.0f}×{eboq.element.width_mm:.0f} mm  "
+                f"Panel Area = {_panel_area:.3f} sqm\n"
+                f"Casting H = {eboq.element.height_mm:.0f} mm  Qty = {eboq.element.quantity}"
             )
             # Flag this element if ANY of its panels is non-standard
             if any(not is_catalog_panel(p) for p in eboq.panels):
@@ -2772,7 +2778,7 @@ class MainWindow(QMainWindow):
             for acc_boq in self._acc_boqs:
                 if acc_boq.high_wall_warning:
                     warnings.append(
-                        f"⚠ {acc_boq.element.label}: Height {acc_boq.element.height_mm}mm > 4500mm"
+                        f"⚠ {acc_boq.element.label}: Height {acc_boq.element.height_mm:.0f} mm > 4500 mm"
                     )
             self.acc_warn_label.setText("\n".join(warnings) if warnings else "")
 
@@ -3072,7 +3078,7 @@ class MainWindow(QMainWindow):
             msg.setIcon(QMessageBox.Icon.Information)
             msg.setText(
                 f"Formwork drawing saved:\n{path}\n\n"
-                f"{len(self._elements)} element(s)  |  Panel H = {panel_h:.0f}mm\n\n"
+                f"{len(self._elements)} element(s)  |  Panel H = {panel_h:.0f} mm\n\n"
                 "Open in AutoCAD, FreeCAD, or any DXF viewer.\n"
                 "Recommended print scale: 1:20"
             )
