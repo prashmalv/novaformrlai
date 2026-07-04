@@ -27,7 +27,7 @@ from src.output.excel_generator import generate_excel_boq
 from src.parsers.dwg_parser import (
     parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf,
     parse_dxf_full, parse_dwg_full, detect_panel_height,
-    is_nova_drawing, parse_nova_drawing,
+    parse_nova_drawing,
 )
 from src.parsers.pdf_parser import (
     render_pdf_page, get_page_count, extract_title_block,
@@ -1141,9 +1141,18 @@ class _DXFWorker(QThread):
     """
     Single worker for all DXF/DWG imports.
 
-    Runs is_nova_drawing() INSIDE the thread so the main thread never blocks
-    on ezdxf's first-load (which can take 1-3 s on Windows, causing the
-    is_nova check to return False and routing to the wrong parser).
+    Detection strategy — try-Nova-first (no separate is_nova_drawing() gate):
+      1. Call parse_nova_drawing() directly.
+      2. If it returns elements  → Nova drawing, emit 'nova'.
+      3. If it returns []        → not a Nova drawing, fall through to standard parser.
+
+    Why this is more reliable than is_nova_drawing() + parse_nova_drawing():
+      The old two-step approach opened the DXF file TWICE. On Windows, the very
+      first file open triggers antivirus/Defender scanning (~0.5-2 s). While the
+      file was being scanned, ezdxf's first read (inside is_nova_drawing) could
+      fail or return incomplete data, making the regex miss, returning False, and
+      routing to the wrong parser. The second import worked because the file was
+      already in the OS page cache. One read eliminates the race entirely.
 
     Emits a dict:
       {'mode': 'nova',     'elements', 'boqs', 'error'}
@@ -1159,17 +1168,20 @@ class _DXFWorker(QThread):
 
     def run(self):
         try:
-            if self._path.lower().endswith('.dxf') and is_nova_drawing(self._path):
+            if self._path.lower().endswith('.dxf'):
+                # Try Nova parser first — single file read, no gating function
                 elements, boqs, error = parse_nova_drawing(
                     self._path,
                     casting_height_mm=self._casting_h,
                     product_height_mm=self._product_h,
                 )
-                self.finished.emit({
-                    'mode': 'nova',
-                    'elements': elements, 'boqs': boqs, 'error': error,
-                })
-            elif self._path.lower().endswith('.dxf'):
+                if elements:
+                    self.finished.emit({
+                        'mode': 'nova',
+                        'elements': elements, 'boqs': boqs, 'error': error,
+                    })
+                    return
+                # No Nova labels found — use standard geometric parser
                 detected, bboxes, polylines, scale = parse_dxf_full(
                     self._path, self._casting_h)
                 self.finished.emit({
@@ -1342,7 +1354,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.10")
+        version = QLabel("v1.11")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
