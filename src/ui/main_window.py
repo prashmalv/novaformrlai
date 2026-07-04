@@ -1135,15 +1135,21 @@ class _DXFParserWorker(QThread):
             self.finished.emit(([], [], [], 1.0, str(ex), ""))
 
 
-# ---------- Nova Drawing v2 parser worker ----------
+# ---------- Unified DXF worker — Nova detection inside thread ----------
 
-class _NovaDrawingWorker(QThread):
+class _DXFWorker(QThread):
     """
-    Background worker for Nova's labelled-panel DXF format.
-    Returns (elements, boqs, error) — BOQs are pre-computed from drawing labels,
-    so no separate optimization step is needed.
+    Single worker for all DXF/DWG imports.
+
+    Runs is_nova_drawing() INSIDE the thread so the main thread never blocks
+    on ezdxf's first-load (which can take 1-3 s on Windows, causing the
+    is_nova check to return False and routing to the wrong parser).
+
+    Emits a dict:
+      {'mode': 'nova',     'elements', 'boqs', 'error'}
+      {'mode': 'standard', 'detected', 'bboxes', 'polylines', 'scale', 'error', 'dxf_path'}
     """
-    finished = pyqtSignal(object)   # emits (elements, boqs, error)
+    finished = pyqtSignal(object)
 
     def __init__(self, path: str, casting_h: float, product_h: float, parent=None):
         super().__init__(parent)
@@ -1153,14 +1159,40 @@ class _NovaDrawingWorker(QThread):
 
     def run(self):
         try:
-            elements, boqs, error = parse_nova_drawing(
-                self._path,
-                casting_height_mm=self._casting_h,
-                product_height_mm=self._product_h,
-            )
-            self.finished.emit((elements, boqs, error))
+            if self._path.lower().endswith('.dxf') and is_nova_drawing(self._path):
+                elements, boqs, error = parse_nova_drawing(
+                    self._path,
+                    casting_height_mm=self._casting_h,
+                    product_height_mm=self._product_h,
+                )
+                self.finished.emit({
+                    'mode': 'nova',
+                    'elements': elements, 'boqs': boqs, 'error': error,
+                })
+            elif self._path.lower().endswith('.dxf'):
+                detected, bboxes, polylines, scale = parse_dxf_full(
+                    self._path, self._casting_h)
+                self.finished.emit({
+                    'mode': 'standard',
+                    'detected': detected, 'bboxes': bboxes,
+                    'polylines': polylines, 'scale': scale,
+                    'error': None, 'dxf_path': self._path,
+                })
+            else:
+                detected, bboxes, polylines, scale, err, dxf_path = parse_dwg_full(
+                    self._path, self._casting_h)
+                self.finished.emit({
+                    'mode': 'standard',
+                    'detected': detected, 'bboxes': bboxes,
+                    'polylines': polylines, 'scale': scale,
+                    'error': err, 'dxf_path': dxf_path,
+                })
         except Exception as ex:
-            self.finished.emit(([], [], str(ex)))
+            self.finished.emit({
+                'mode': 'standard',
+                'detected': [], 'bboxes': [], 'polylines': [], 'scale': 1.0,
+                'error': str(ex), 'dxf_path': '',
+            })
 
 
 # ---------- Main Window ----------
@@ -1234,9 +1266,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_config(),          "  Configuration  ")
         self.tabs.addTab(self._tab_boq(),             "  BOQ Results  ")
         self.tabs.addTab(self._tab_export(),          "  Export  ")
-        ai_tab = self._tab_ai_assistant()
-        self.tabs.addTab(ai_tab, "  AI Assistant  ")
-        self.tabs.setTabEnabled(self.tabs.count() - 1, False)
+        # AI Assistant widget created but NOT added to tabs (hidden until ready)
+        self._ai_widget = self._tab_ai_assistant()
 
         # Lazy rendering: Drawing Preview (2) and 3D View (3) render only on demand
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -1311,7 +1342,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.8")
+        version = QLabel("v1.9")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -1683,15 +1714,20 @@ class MainWindow(QMainWindow):
         # ── Quick Panel Settings bar (synced with Configuration tab) ──────────
         settings_grp = QGroupBox("Panel Settings")
         settings_grp.setStyleSheet(GROUP_STYLE)
+        settings_grp.setMaximumHeight(70)
+        settings_grp.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_row = QHBoxLayout(settings_grp)
         settings_row.setSpacing(12)
-        settings_row.setContentsMargins(12, 6, 12, 6)
+        settings_row.setContentsMargins(12, 4, 12, 4)
 
         settings_row.addWidget(QLabel("Panel Height (mm):"))
         self.boq_ph_combo = QComboBox()
         self.boq_ph_combo.addItems(_PANEL_HEIGHT_OPTIONS)
         self.boq_ph_combo.setCurrentText("3200")
         self.boq_ph_combo.setMinimumWidth(90)
+        self.boq_ph_combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.boq_ph_combo.currentIndexChanged.connect(self._boq_ph_changed)
         settings_row.addWidget(self.boq_ph_combo)
 
@@ -1702,6 +1738,8 @@ class MainWindow(QMainWindow):
         self.boq_ch_combo.setCurrentText("3200")
         self.boq_ch_combo.setEditable(True)
         self.boq_ch_combo.setMinimumWidth(90)
+        self.boq_ch_combo.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.boq_ch_combo.currentIndexChanged.connect(self._boq_ch_changed)
         settings_row.addWidget(self.boq_ch_combo)
 
@@ -1711,6 +1749,8 @@ class MainWindow(QMainWindow):
         self.boq_sets_spin.setRange(1, 100)
         self.boq_sets_spin.setValue(1)
         self.boq_sets_spin.setMinimumWidth(60)
+        self.boq_sets_spin.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.boq_sets_spin.valueChanged.connect(self._boq_sets_changed)
         settings_row.addWidget(self.boq_sets_spin)
 
@@ -2421,14 +2461,18 @@ class MainWindow(QMainWindow):
                 f"Drawing Preview and 3D View available in their tabs."
             )
 
-        # ── Detect Nova labelled-panel format and route to correct worker ────
-        if path.lower().endswith('.dxf') and is_nova_drawing(path):
-            self._dwg_worker = _NovaDrawingWorker(
-                path, casting_h, panel_h, parent=self)
-            self._dwg_worker.finished.connect(_on_nova_parse_done)
-        else:
-            self._dwg_worker = _DXFParserWorker(path, panel_h, casting_h, parent=self)
-            self._dwg_worker.finished.connect(_on_parse_done)
+        # ── Unified worker — is_nova_drawing() runs inside thread to avoid
+        #    first-import failures caused by ezdxf loading slowly on Windows ──
+        def _on_dxf_done(result):
+            if result.get('mode') == 'nova':
+                _on_nova_parse_done((result['elements'], result['boqs'], result['error']))
+            else:
+                _on_parse_done((result['detected'], result['bboxes'],
+                                result['polylines'], result['scale'],
+                                result['error'], result['dxf_path']))
+
+        self._dwg_worker = _DXFWorker(path, casting_h, panel_h, parent=self)
+        self._dwg_worker.finished.connect(_on_dxf_done)
         self._dwg_worker.start()
 
     def _run_optimization(self):

@@ -337,6 +337,24 @@ class DXFViewerWidget(QWidget):
         self._overlay_texts   = []
         self._style_ax_fallback()
 
+        # When no geometry but a DXF path is set, show a loading message while
+        # the background ezdxf renderer works (Nova drawings have no polylines)
+        if not self._polylines and not self._bboxes and self._dxf_path:
+            self.ax.text(
+                0.5, 0.5,
+                '⏳  Loading DXF drawing…\n\nPlease wait a moment.',
+                transform=self.ax.transAxes,
+                ha='center', va='center', fontsize=12, color='#6fa8d4',
+                bbox=dict(boxstyle='round,pad=1', facecolor='#121c2a',
+                          edgecolor='#2a5a8a', linewidth=1.5),
+                linespacing=2.0,
+            )
+            self.ax.set_xticks([])
+            self.ax.set_yticks([])
+            self._render_mode_lbl.setText("⏳ Rendering DXF background…")
+            self.canvas.draw_idle()
+            return
+
         # Capped polyline rendering — always fast
         n_poly = len(self._polylines)
         polys  = self._polylines[:_POLYLINE_CAP]
