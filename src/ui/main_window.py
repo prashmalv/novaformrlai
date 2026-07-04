@@ -1346,7 +1346,31 @@ class MainWindow(QMainWindow):
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
+        lay.addSpacing(10)
+
+        logout_btn = QPushButton("⎋  Logout")
+        logout_btn.setFixedHeight(30)
+        logout_btn.setToolTip("Log out and close application")
+        logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        logout_btn.setStyleSheet("""
+            QPushButton {
+                background: #8b2222; color: white;
+                border-radius: 4px; padding: 0 12px;
+                font-weight: 700; font-size: 10px; border: none;
+            }
+            QPushButton:hover  { background: #a83232; }
+            QPushButton:pressed{ background: #6b1a1a; }
+        """)
+        logout_btn.clicked.connect(self._do_logout)
+        lay.addWidget(logout_btn)
+
         return frame
+
+    def _do_logout(self):
+        from src.auth.auth_manager import log_action as _log
+        _log(self._user["username"], self._user["full_name"],
+             "LOGOUT", "User clicked Logout button")
+        self.close()
 
     def _open_admin_panel(self):
         from src.ui.admin_panel import AdminPanelDialog
@@ -2022,18 +2046,31 @@ class MainWindow(QMainWindow):
     def _add_element(self):
         dlg = AddElementDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_element:
-            self._elements.append(dlg.result_element)
+            elem = dlg.result_element
+            self._elements.append(elem)
             self._refresh_element_table()
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "ELEMENT_ADD",
+                 f"{elem.label} ({elem.element_type.value}) "
+                 f"{elem.length_mm:.0f}×{elem.width_mm:.0f} mm  qty={elem.quantity}")
 
     def _edit_element(self):
         row = self.elem_table.currentRow()
         if row < 0 or row >= len(self._elements):
             QMessageBox.information(self, "Edit", "Please select an element to edit.")
             return
+        old_label = self._elements[row].label
         dlg = AddElementDialog(self, self._elements[row])
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_element:
-            self._elements[row] = dlg.result_element
+            elem = dlg.result_element
+            self._elements[row] = elem
             self._refresh_element_table()
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "ELEMENT_EDIT",
+                 f"{old_label} → {elem.label} ({elem.element_type.value}) "
+                 f"{elem.length_mm:.0f}×{elem.width_mm:.0f} mm  qty={elem.quantity}")
 
     def _delete_element(self):
         row = self.elem_table.currentRow()
@@ -2049,6 +2086,11 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             self._elements.pop(row)
             self._refresh_element_table()
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "ELEMENT_DELETE",
+                 f"{elem.label} ({elem.element_type.value}) "
+                 f"{elem.length_mm:.0f}×{elem.width_mm:.0f} mm")
 
     def _refresh_element_table(self):
         self.elem_table.setRowCount(len(self._elements))
@@ -2176,6 +2218,10 @@ class MainWindow(QMainWindow):
                 self._elements.append(elem)
                 added += 1
             self._refresh_element_table()
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "PDF_IMPORT",
+                 f"{added} element(s) from: {Path(path).name}")
             QMessageBox.information(
                 self, "Elements Added",
                 f"{added} element(s) imported from PDF.\n"

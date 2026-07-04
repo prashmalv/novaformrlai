@@ -70,7 +70,7 @@ class LoginDialog(QDialog):
             border-top-right-radius: 12px;
         """)
         hlay = QHBoxLayout(header)
-        hlay.setContentsMargins(20, 0, 20, 0)
+        hlay.setContentsMargins(20, 0, 12, 0)
 
         # Logo
         if _LOGO.exists():
@@ -94,6 +94,22 @@ class LoginDialog(QDialog):
         title_col.addWidget(t2)
         hlay.addLayout(title_col)
         hlay.addStretch()
+
+        # Close button — dialog is frameless so we need our own
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(28, 28)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent; color: rgba(255,255,255,0.7);
+                border: none; border-radius: 4px; font-size: 13px; font-weight: bold;
+            }
+            QPushButton:hover  { background: rgba(255,255,255,0.15); color: white; }
+            QPushButton:pressed{ background: rgba(0,0,0,0.2); }
+        """)
+        close_btn.setToolTip("Close application")
+        close_btn.clicked.connect(self.reject)
+        hlay.addWidget(close_btn)
 
         vlay.addWidget(header)
         vlay.addSpacing(28)
@@ -188,13 +204,9 @@ class LoginDialog(QDialog):
         vlay.addStretch()
 
         # ── Footer ──────────────────────────────────────────────────────────
-        footer_lbl = QLabel(
-            "Nova Formworks Pvt. Ltd. · NovoForm v1.1 · "
-            "Default admin: admin / nova@123"
-        )
+        footer_lbl = QLabel("Nova Formworks Pvt. Ltd.")
         footer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         footer_lbl.setStyleSheet(f"color:{_HINT_GRAY}; font-size:8pt;")
-        footer_lbl.setWordWrap(True)
         footer_lbl.setContentsMargins(36, 0, 36, 0)
         vlay.addWidget(footer_lbl)
 
