@@ -101,12 +101,16 @@ class _DXFBgWorker(QThread):
             ymin, ymax = ax.get_ylim()
 
             buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=96, bbox_inches='tight',
+            fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
                         facecolor='#f8f9fa')
             buf.seek(0)
             self.finished.emit(buf.read(), xmin, xmax, ymin, ymax)
-        except Exception:
-            self.finished.emit(b'', 0.0, 1.0, 0.0, 1.0)
+        except Exception as ex:
+            # Emit error text as bytes so caller can display it / fall back
+            self.finished.emit(
+                b'\x00ERR\x00' + str(ex).encode('utf-8', errors='replace'),
+                0.0, 1.0, 0.0, 1.0
+            )
 
 
 class DXFViewerWidget(QWidget):
@@ -383,20 +387,35 @@ class DXFViewerWidget(QWidget):
     def _on_bg_ready(self, png_bytes: bytes, xmin: float, xmax: float,
                      ymin: float, ymax: float):
         """Stage 2 — called from main thread when background render completes."""
-        if not png_bytes:
-            self._render_mode_lbl.setText("● Outline mode  (DXF render failed)")
+        # Error sentinel emitted by worker on exception
+        if not png_bytes or png_bytes.startswith(b'\x00ERR\x00'):
+            err_msg = ""
+            if png_bytes and png_bytes.startswith(b'\x00ERR\x00'):
+                err_msg = png_bytes[5:].decode('utf-8', errors='replace')
+            # Fallback: try synchronous render directly on main-thread axes
+            self._render_mode_lbl.setText("⏳ Rendering (fallback)…")
+            try:
+                self._render_full()
+                self._render_mode_lbl.setText("● AutoCAD renderer")
+            except Exception:
+                self._render_mode_lbl.setText(
+                    f"● Outline mode  (render failed{': ' + err_msg if err_msg else ''})"
+                )
             return
 
         try:
-            import numpy as np
-            from PIL import Image as _PIL
+            import matplotlib.image as _mpimg
 
-            img = _PIL.open(io.BytesIO(png_bytes))
-            img_arr = np.array(img)
+            img_arr = _mpimg.imread(io.BytesIO(png_bytes))
 
-            # Preserve current view limits so user isn't jarred
-            xlim = self.ax.get_xlim()
-            ylim = self.ax.get_ylim()
+            # Only restore the user's pan/zoom when they had real geometry to
+            # navigate. For Nova drawings (polylines=[], bboxes=[]) the current
+            # limits are the placeholder default [0,1] — restoring those would
+            # lock the view to a 1-unit slice of a drawing that spans tens of
+            # thousands of mm, making the image invisible.
+            has_geom = bool(self._polylines or self._bboxes)
+            saved_xlim = self.ax.get_xlim() if has_geom else None
+            saved_ylim = self.ax.get_ylim() if has_geom else None
 
             self.ax.clear()
             self._overlay_patches = []
@@ -411,17 +430,25 @@ class DXFViewerWidget(QWidget):
                 zorder=0,
                 interpolation='bilinear',
             )
-            self.ax.set_xlim(xlim)
-            self.ax.set_ylim(ylim)
+
+            if saved_xlim is not None:
+                self.ax.set_xlim(saved_xlim)
+                self.ax.set_ylim(saved_ylim)
+            else:
+                # Auto-fit to the full DXF drawing extent
+                margin_x = (xmax - xmin) * 0.04
+                margin_y = (ymax - ymin) * 0.04
+                self.ax.set_xlim(xmin - margin_x, xmax + margin_x)
+                self.ax.set_ylim(ymin - margin_y, ymax + margin_y)
 
             self._draw_overlays(light_bg=True)
             self._draw_legend(light_bg=True)
             self.canvas.draw_idle()
             self._full_render_done = True
             self._render_mode_lbl.setText("● AutoCAD renderer")
-        except Exception:
-            # PIL not available — keep the fast preview, just clear the spinner
-            self._render_mode_lbl.setText("● Outline mode")
+        except Exception as ex:
+            # Keep the fast preview, just update the status label
+            self._render_mode_lbl.setText(f"● Outline mode  ({ex})")
 
     def _render_full(self):
         """Legacy sync render — kept for non-DXF paths."""
