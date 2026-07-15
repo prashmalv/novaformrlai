@@ -11,6 +11,14 @@ from PyQt6.QtGui import QFont, QPixmap
 
 from src.auth.auth_manager import authenticate, initialize_db
 
+# Cross-platform font: Segoe UI on Windows, system default elsewhere
+def _ui_font(size: int, bold: bool = False) -> QFont:
+    from PyQt6.QtGui import QFontDatabase
+    preferred = ["Segoe UI", ".AppleSystemUIFont", "Helvetica Neue", "Arial"]
+    family = next((f for f in preferred if f in QFontDatabase.families()), "")
+    w = QFont.Weight.Bold if bold else QFont.Weight.Normal
+    return QFont(family, size, w)
+
 _LOGO = Path(__file__).parent.parent.parent / "assets" / "images" / "NovaLogo.png"
 
 _NOVA_BLUE   = "#1a3a5c"
@@ -85,10 +93,10 @@ class LoginDialog(QDialog):
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
         t1 = QLabel("NovoForm")
-        t1.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        t1.setFont(_ui_font(16, bold=True))
         t1.setStyleSheet(f"color:{_WHITE}; background:transparent;")
         t2 = QLabel("Formwork BOQ Generator")
-        t2.setFont(QFont("Segoe UI", 9))
+        t2.setFont(_ui_font(9))
         t2.setStyleSheet(f"color:rgba(255,255,255,0.75); background:transparent;")
         title_col.addWidget(t1)
         title_col.addWidget(t2)
@@ -120,20 +128,20 @@ class LoginDialog(QDialog):
         form_wrap.setSpacing(0)
 
         signin_lbl = QLabel("Sign In")
-        signin_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        signin_lbl.setFont(_ui_font(14, bold=True))
         signin_lbl.setStyleSheet(f"color:{_NOVA_BLUE};")
         form_wrap.addWidget(signin_lbl)
         form_wrap.addSpacing(4)
 
         sub_lbl = QLabel("Enter your credentials to continue")
-        sub_lbl.setFont(QFont("Segoe UI", 9))
+        sub_lbl.setFont(_ui_font(9))
         sub_lbl.setStyleSheet(f"color:{_HINT_GRAY};")
         form_wrap.addWidget(sub_lbl)
         form_wrap.addSpacing(22)
 
         # Username
         user_lbl = QLabel("Username")
-        user_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        user_lbl.setFont(_ui_font(9, bold=True))
         user_lbl.setStyleSheet(f"color:{_NOVA_BLUE};")
         form_wrap.addWidget(user_lbl)
         form_wrap.addSpacing(4)
@@ -147,7 +155,7 @@ class LoginDialog(QDialog):
 
         # Password
         pw_lbl = QLabel("Password")
-        pw_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        pw_lbl.setFont(_ui_font(9, bold=True))
         pw_lbl.setStyleSheet(f"color:{_NOVA_BLUE};")
         form_wrap.addWidget(pw_lbl)
         form_wrap.addSpacing(4)

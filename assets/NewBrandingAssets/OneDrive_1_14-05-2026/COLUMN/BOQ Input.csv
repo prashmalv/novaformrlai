@@ -1,0 +1,23 @@
+category_name,dimension,formwork_area,unit_area,category,sub_category,product_description,qty_nos,unit,no_of_set,height
+column ,300x1200,,0.296,panels_or_spacers,outer corner,80*3705,4,Nos,2,3705
+column ,300x1200,,2.223,panels_or_spacers,panel,600*3705,4,Nos,2,3705
+column ,300x1200,,1.112,panels_or_spacers,panel,300*3705,2,Nos,2,3705
+column ,300x1000,,0.296,panels_or_spacers,outer corner,80*3705,4,Nos,20,3705
+column ,300x1000,,1.853,panels_or_spacers,panel,500*3705,4,Nos,20,3705
+column ,300x1000,,1.112,panels_or_spacers,panel,300*3705,2,Nos,20,3705
+column ,250x1500,,0.296,panels_or_spacers,outer corner,80*3705,4,Nos,3,3705
+column ,250x1500,,2.223,panels_or_spacers,panel,600*3705,4,Nos,3,3705
+column ,250x1500,,1.112,panels_or_spacers,panel,300*3705,2,Nos,3,3705
+column ,250x1500,,0.926,panels_or_spacers,panel,250*3705,2,Nos,3,3705
+column ,250x1000,,0.296,panels_or_spacers,panel,80*3705,4,Nos,18,3705
+column ,250x1000,,1.853,panels_or_spacers,panel,500*3705,4,Nos,18,3705
+column ,250x1000,,0.926,panels_or_spacers,panel,250*3705,2,Nos,18,3705
+column ,250x1200,,0.296,panels_or_spacers,outer corner,80*3705,4,Nos,3,3705
+column ,250x1200,,2.223,panels_or_spacers,,600*3705,4,Nos,3,3705
+column ,250x1200,,0.926,panels_or_spacers,,250*3705,2,Nos,3,3705
+column ,1125x1125x250,,0.296,panels_or_spacers,outer corner,80*3705,5,Nos,2,3705
+column ,1125x1125x251,,0.741,panels_or_spacers,,IC100*3705,1,Nos,2,3705
+column ,1125x1125x252,,1.297,panels_or_spacers,,350*3705,6,Nos,2,3705
+column ,1125x1125x253,,1.112,panels_or_spacers,,300*3705,4,Nos,2,3705
+column ,1125x1125x254,,0.463,panels_or_spacers,,125*3705,4,Nos,2,3705
+column ,1125x1125x255,,0.926,panels_or_spacers,,250*3705,2,Nos,2,3705

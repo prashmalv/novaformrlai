@@ -1,0 +1,44 @@
+{
+  "company": {
+    "name": "NOVA FORMWORKS PVT LTD",
+    "address": "A-7/121-124 South Side of GT Road Indl.Area Ghaziabad (UP)",
+    "email": "info@novaformworks.com",
+    "mobile": "+91-93 10 69 54 40",
+    "gst_rate": 0.18
+  },
+  "panel_system": {
+    "_catalog_note": "Confirmed from Nova StandardProductList.xlsx (June 2026). Only 3 standard heights: 1235, 2470, 3705mm. 1000mm width only available in 1235mm height. Spacers (5–40mm) are fill plates, not BOQ panels.",
+    "standard_widths_mm": [600, 500, 400, 350, 300, 250, 230, 200, 150, 125, 100, 40],
+    "standard_heights_mm": [3705, 2470, 1235],
+    "spacer_widths_mm": [5, 10, 15, 20, 25, 40],
+    "_note_1000mm": "1000mm panel only available in 1235mm height (SKU 36)",
+    "_note_non_standard_heights": "Heights 3000mm and 3200mm do NOT appear in catalog — client drawings using these heights need field confirmation with Nova team",
+    "oc_width_mm": 80,
+    "ic_width_mm": 100,
+    "waller_standard_lengths_m": [0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0],
+    "tierod_diameter_mm": 16,
+    "tierod_standard_lengths_m": [0.8, 1.0, 1.2, 1.5, 3.0, 6.0],
+    "anchor_nut_sizes_mm": [90, 100],
+    "max_spacer_mm": 40,
+    "preferred_max_spacers": 2
+  },
+  "accessories": {
+    "pin_types": ["PIN & WEDGE 50MM", "PIN & WEDGE 20MM", "ROUND PIN 20MM"],
+    "pins_per_panel_joint": 4,
+    "waller_spacing_mm": 800,
+    "tierod_spacing_horizontal_mm": 600,
+    "tierod_spacing_vertical_mm": 800
+  },
+  "default_rates": {
+    "panel_per_sqm": 0,
+    "waller_per_rm": 0,
+    "tierod_per_rm": 0,
+    "prop_per_unit": 0,
+    "anchor_nut_per_unit": 0,
+    "oc_per_unit": 0,
+    "ic_per_unit": 0,
+    "pin_50mm_per_unit": 0,
+    "pin_20mm_per_unit": 0,
+    "round_pin_20mm_per_unit": 0
+  }
+}

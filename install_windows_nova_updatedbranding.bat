@@ -2,21 +2,27 @@
 REM ============================================================
 REM  NovoForm — Windows Installation Script
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.11 — Parser Fixes: L-COL, R-COL, IC Corners (June 2026)
+REM  Version: 1.19 — PDF import for Nova box-culvert drawings (July 2026)
 REM  Developed by RLAI (rightleft.ai)
 REM
-REM  What's new in v1.11:
-REM    - Nova Drawing v2 Auto-Detection (KEY FEATURE)
-REM      Import DXF with labelled panels (COL:-LxW, FF-COL, R-COL, L-COL)
-REM      App reads panel quantities DIRECTLY from drawing — no optimization needed
-REM      100% accurate: exactly what engineer drew is what you get
-REM    - Casting Height vs Product Height separated
-REM      Header: "Height: 2470MM" = pour height
-REM      Product: "Panel 600*3200" = physical panel supplied
-REM    - HTTP Server mode for central auth (no Windows credentials)
-REM      Run start_server.bat on admin machine
-REM      Workers connect via http://192.168.1.X:8765
-REM    - Server URL config in Admin Panel -> Database Settings
+REM  What's new in v1.19:
+REM    - PDF Import: Nova box-culvert PDFs now import elements + panel BOQ
+REM      automatically (BOX CULVERT / UPPER PIPE / BOTTOM PIPE / BOTTOM PANEL).
+REM    - "Import Elements" button replaces "Open & Review" in PDF section.
+REM    - Same Replace/Add/Cancel flow as Nova DXF import.
+REM
+REM  What was new in v1.18:
+REM    - Edit Panels button in BOQ Results: select element row, edit/add/delete panels.
+REM    - Double-click Per-Element Breakdown row to open panel editor.
+REM    - Delete element now removes its BOQ entry (lists stay in sync).
+REM
+REM  What was new in v1.14:
+REM    - CRITICAL FIX: First-import mismatch on Col.dxf (24-element drawings)
+REM      Root cause: Windows Defender scans file CONCURRENTLY with ezdxf read,
+REM      causing partial entity load (10/24 correct on first import).
+REM      Fix: entire file read into RAM first, ezdxf parses from BytesIO —
+REM      file is never opened a second time, Defender cannot interfere.
+REM      All imports (first, second, any) now produce identical correct results.
 REM
 REM  What was new in v1.3:
 REM    - Export Formwork Drawing as AutoCAD DXF
@@ -39,26 +45,40 @@ set APP_DIR=%~dp0
 if "%APP_DIR:~-1%"=="\" set APP_DIR=%APP_DIR:~0,-1%
 cd /d "%APP_DIR%"
 
-title NovoForm v1.11 Installer — Nova Formworks
+title NovoForm v1.19 Installer — Nova Formworks
+
+REM ── Check: must be run as Administrator ──────────────────
+net session >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo  ====================================================
+    echo   ERROR: Administrator privileges required!
+    echo.
+    echo   Please right-click this file and select:
+    echo     "Run as administrator"
+    echo.
+    echo   Without admin rights, Python packages may fail
+    echo   to install due to file permission errors.
+    echo  ====================================================
+    echo.
+    pause
+    exit /b 1
+)
 
 echo.
 echo  ====================================================
 echo   NovoForm — Formwork Analysis and BOQ Generator
-echo   Version 1.11  ^|  Nova Formworks Pvt. Ltd.
+echo   Version 1.18  ^|  Nova Formworks Pvt. Ltd.
 echo   Nova Drawing v2 Parser  ^|  June 2026
 echo   Developed by RLAI (rightleft.ai)
 echo  ====================================================
 echo.
-echo   What's new in v1.11:
-echo     - Nova Drawing v2 Parser (KEY FEATURE)
-echo       Import labelled DXF: panel quantities read
-echo       directly from drawing — 100% accurate
-echo       Supports: Regular, R-COL, L-COL, SF-COL
-echo       L-shaped columns with IC inner-corner panels
-echo     - Panel count fixes: bounding-box filter
-echo       prevents inflated panel counts from frame lines
-echo     - HTTP Server mode for central auth
-echo       Run start_server.bat on admin machine
+echo   What's new in v1.19:
+echo     - PDF Import: Nova box-culvert PDFs now extract
+echo       elements and panel BOQ automatically
+echo       (BOX CULVERT / UPPER PIPE / BOTTOM PIPE plans)
+echo     - v1.18: Edit/Delete panels in BOQ Results tab
+echo     - v1.15: AV scan fix; v1.14: Edit Panels in BOQ
 echo.
 echo   Default login: admin / nova@123
 echo   (Change password immediately after first login)
@@ -184,7 +204,7 @@ if not exist "%APP_DIR%\config\api_config.json" (
 REM ── Done ─────────────────────────────────────────────────
 echo.
 echo  ====================================================
-echo   Installation Complete!  ^|  NovoForm v1.11
+echo   Installation Complete!  ^|  NovoForm v1.19
 echo.
 echo   To launch NovoForm:
 echo     Option 1 : Double-click "NovoForm" on your Desktop

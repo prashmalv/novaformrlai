@@ -6,13 +6,14 @@ import json
 from datetime import date
 from pathlib import Path
 from PyQt6.QtWidgets import (
+    QApplication,
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QComboBox,
     QSpinBox, QDoubleSpinBox, QCheckBox, QFileDialog,
     QDialog, QDialogButtonBox, QFormLayout, QMessageBox,
     QGroupBox, QScrollArea, QTextEdit, QSplitter,
-    QHeaderView, QFrame, QSizePolicy
+    QHeaderView, QFrame, QSizePolicy, QProgressDialog
 )
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
@@ -29,11 +30,17 @@ from src.parsers.dwg_parser import (
     parse_dxf_full, parse_dwg_full, detect_panel_height,
     parse_nova_drawing,
 )
-from src.parsers.pdf_parser import (
-    render_pdf_page, get_page_count, extract_title_block,
-    extract_elements_ai, extract_elements_cv,
-    get_api_key, save_api_key,
-)
+# pdf_parser legacy functions loaded lazily inside PDFImportDialog to avoid
+# import errors when the module does not expose the old visual-preview API.
+def _load_pdf_legacy_fns():
+    from src.parsers.pdf_parser import (
+        render_pdf_page, get_page_count, extract_title_block,
+        extract_elements_ai, extract_elements_cv,
+        get_api_key, save_api_key,
+    )
+    return (render_pdf_page, get_page_count, extract_title_block,
+            extract_elements_ai, extract_elements_cv,
+            get_api_key, save_api_key)
 from src.engine.accessories_calc import (
     calculate_accessories, aggregate_accessories
 )
@@ -268,6 +275,147 @@ class AddElementDialog(QDialog):
             floor_label=self.floor_edit.text().strip(),
         )
         self.accept()
+
+
+# ---------- Edit BOQ Panels Dialog ----------
+
+_CATALOG_WIDTHS = [600, 500, 490, 440, 400, 350, 340, 300, 275, 250, 240, 230, 200, 150, 125, 100, 40]
+
+class EditBOQPanelsDialog(QDialog):
+    """
+    Let the user edit, delete, or add panel entries for one ElementBOQ.
+    Opened from the BOQ Results tab.
+    """
+    def __init__(self, boq, product_height_mm: float, parent=None):
+        super().__init__(parent)
+        self._boq = boq
+        self._product_h = float(product_height_mm)
+        self.setWindowTitle(f"Edit Panels — {boq.element.label}")
+        self.setMinimumWidth(540)
+        self.setMinimumHeight(420)
+        self._build_ui()
+
+    def _build_ui(self):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        lay.setContentsMargins(16, 16, 16, 16)
+
+        # Header info
+        info = QLabel(
+            f"<b>{self._boq.element.label}</b>  |  "
+            f"{int(self._boq.element.length_mm)}×{int(self._boq.element.width_mm)} mm  |  "
+            f"Qty: {self._boq.element.quantity}"
+        )
+        info.setStyleSheet("font-size:12px; padding:4px 0;")
+        lay.addWidget(info)
+
+        # Panel table
+        self.tbl = QTableWidget(0, 4)
+        self.tbl.setHorizontalHeaderLabels(["Panel Size", "Type", "Quantity", ""])
+        hh = self.tbl.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.tbl.setColumnWidth(3, 70)
+        self.tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.tbl.setStyleSheet(TABLE_STYLE)
+        self.tbl.verticalHeader().setVisible(False)
+        lay.addWidget(self.tbl)
+
+        for p in self._boq.panels:
+            self._append_row(p.size_label, p.width_mm, p.height_mm,
+                             p.quantity, p.is_corner, p.is_inner_corner)
+
+        # Add panel row
+        add_row = QHBoxLayout()
+        add_row.addWidget(QLabel("Add:"))
+
+        self._add_width_combo = QComboBox()
+        self._add_width_combo.addItem("OC80 (Corner)")
+        for w in _CATALOG_WIDTHS:
+            self._add_width_combo.addItem(f"{w} mm")
+        add_row.addWidget(self._add_width_combo)
+
+        btn_add_row = QPushButton("+ Add Panel")
+        btn_add_row.setStyleSheet(BTN_STYLE)
+        btn_add_row.setFixedHeight(28)
+        btn_add_row.clicked.connect(self._add_panel_row)
+        add_row.addWidget(btn_add_row)
+        add_row.addStretch()
+        lay.addLayout(add_row)
+
+        # OK / Cancel
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def _append_row(self, size_label, width_mm, height_mm, qty, is_corner, is_inner=False):
+        r = self.tbl.rowCount()
+        self.tbl.insertRow(r)
+
+        lbl_item = QTableWidgetItem(size_label)
+        lbl_item.setFlags(lbl_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        lbl_item.setData(Qt.ItemDataRole.UserRole, {
+            'width_mm': width_mm, 'height_mm': height_mm,
+            'is_corner': is_corner, 'is_inner_corner': is_inner,
+        })
+        self.tbl.setItem(r, 0, lbl_item)
+
+        type_txt = "Inner Corner" if is_inner else ("OC Corner" if is_corner else "Flat Panel")
+        type_item = QTableWidgetItem(type_txt)
+        type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if is_corner:
+            type_item.setForeground(QColor(NOVA_BLUE))
+        self.tbl.setItem(r, 1, type_item)
+
+        spin = QSpinBox()
+        spin.setRange(1, 9999)
+        spin.setValue(qty)
+        self.tbl.setCellWidget(r, 2, spin)
+
+        del_btn = QPushButton("Delete")
+        del_btn.setStyleSheet(BTN_DANGER)
+        del_btn.setFixedHeight(24)
+        del_btn.clicked.connect(lambda _, row=r: self._delete_row(row))
+        self.tbl.setCellWidget(r, 3, del_btn)
+
+    def _delete_row(self, row):
+        self.tbl.removeRow(row)
+
+    def _add_panel_row(self):
+        txt = self._add_width_combo.currentText()
+        h = self._product_h
+        if txt.startswith("OC80"):
+            self._append_row(f"OC80X{int(h)}", 80.0, h, 2, True, False)
+        else:
+            w = float(txt.replace(" mm", ""))
+            self._append_row(f"{int(w)}X{int(h)}", w, h, 2, False, False)
+
+    def get_updated_panels(self):
+        """Return updated list[PanelEntry] from current table state."""
+        from src.models.element import PanelEntry
+        result = []
+        for r in range(self.tbl.rowCount()):
+            item = self.tbl.item(r, 0)
+            if not item:
+                continue
+            meta = item.data(Qt.ItemDataRole.UserRole) or {}
+            spin = self.tbl.cellWidget(r, 2)
+            qty = spin.value() if isinstance(spin, QSpinBox) else 1
+            result.append(PanelEntry(
+                size_label=item.text(),
+                width_mm=float(meta.get('width_mm', 80)),
+                height_mm=float(meta.get('height_mm', self._product_h)),
+                quantity=qty,
+                is_corner=bool(meta.get('is_corner', False)),
+                is_inner_corner=bool(meta.get('is_inner_corner', False)),
+            ))
+        return result
 
 
 # ---------- DWG Review Dialog ----------
@@ -647,7 +795,7 @@ class ImportSettingsDialog(QDialog):
             f"<b>{element_count} element(s)</b> detected from "
             f"<b>{drawing_name}</b>.<br><br>"
             "Confirm the panel height before reviewing detected elements. "
-            "You can also change it later from the Configuration tab."
+            "You can also change it later from the BOQ Results tab."
         )
         summary.setWordWrap(True)
         summary.setStyleSheet(
@@ -739,13 +887,20 @@ class PDFImportDialog(QDialog):
         self._elements: list[StructuralElement] = []
         self._pdf_path = pdf_path
         self._page_num = 0
-        self._total_pages = get_page_count(pdf_path)
+        # Lazy-load legacy PDF functions so the import is deferred until first use.
+        try:
+            (self._render_pdf_page, get_page_count, self._extract_title_block,
+             self._extract_elements_ai, self._extract_elements_cv,
+             self._get_api_key, self._save_api_key) = _load_pdf_legacy_fns()
+            self._total_pages = get_page_count(pdf_path)
+        except (ImportError, Exception):
+            self._total_pages = 1
         self._zoom = 1.0
 
         root = QVBoxLayout(self)
 
         # ── Info bar ──────────────────────────────────────────────────────
-        meta = extract_title_block(pdf_path)
+        meta = self._extract_title_block(pdf_path) if hasattr(self, '_extract_title_block') else {}
         info_text = (
             f"<b>PDF:</b> {Path(pdf_path).name}"
             + (f"  |  <b>Project:</b> {meta['project_name']}" if meta['project_name'] else "")
@@ -905,7 +1060,7 @@ class PDFImportDialog(QDialog):
 
     def _render_page(self):
         try:
-            png_bytes, _, _ = render_pdf_page(self._pdf_path, self._page_num, dpi=150)
+            png_bytes, _, _ = self._render_pdf_page(self._pdf_path, self._page_num, dpi=150)
         except Exception as ex:
             self._img_label.setText(f"Cannot render: {ex}")
             return
@@ -951,26 +1106,25 @@ class PDFImportDialog(QDialog):
     # ── Extraction ────────────────────────────────────────────────────────────
 
     def _auto_extract_ai(self):
-        key = get_api_key()
+        key = self._get_api_key()
         if not key:
             key = self._ask_api_key()
             if not key:
                 return
         self._run_extraction(
-            lambda: extract_elements_ai(self._pdf_path, self._page_num, api_key=key),
+            lambda: self._extract_elements_ai(self._pdf_path, self._page_num, api_key=key),
             busy_msg="Analysing drawing with AI… please wait (5–15 sec).",
         )
 
     def _auto_extract_cv(self):
         self._run_extraction(
-            lambda: extract_elements_cv(self._pdf_path, self._page_num),
+            lambda: self._extract_elements_cv(self._pdf_path, self._page_num),
             busy_msg=(
                 "Running offline OCR… first run downloads ~150 MB models. "
                 "Please wait (30–60 sec)."),
         )
 
     def _run_extraction(self, fn, busy_msg: str):
-        from PyQt6.QtWidgets import QApplication
         self._btn_ai.setEnabled(False)
         self._btn_cv.setEnabled(False)
         self._ai_status.setText(busy_msg)
@@ -1062,7 +1216,7 @@ class PDFImportDialog(QDialog):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             key = key_edit.text().strip()
             if key:
-                save_api_key(key)
+                self._save_api_key(key)
                 return key
         return None
 
@@ -1169,11 +1323,80 @@ class _DXFWorker(QThread):
     def run(self):
         try:
             if self._path.lower().endswith('.dxf'):
-                # Try Nova parser first — single file read, no gating function
+                # ── Definitive Windows AV-scan fix ──────────────────────────────
+                # Windows Defender scans a file on its FIRST ever open.  The scan
+                # runs CONCURRENTLY with the file read, so ezdxf.readfile() may
+                # return incomplete data (no exception — just missing entities).
+                # Fix: do a plain binary read first.  This blocks until the OS
+                # returns the file handle (AV scan must finish before that happens).
+                # Once the scan result is cached, the subsequent ezdxf.readfile()
+                # reads from the OS page cache with no further AV involvement.
+                import ezdxf as _ezdxf
+                import io as _io
+
+                # ── Read entire file into memory first (with retry) ─────────────
+                # Windows Defender / OneDrive sync can cause the first f.read()
+                # to return PARTIAL bytes without raising an exception.  ezdxf
+                # then parses a truncated file silently — no error, just missing
+                # TEXT entities → wrong panel counts.  Second import always works
+                # because the file is then in the OS page cache.
+                #
+                # Fix: check len(_raw) == os.path.getsize() and retry with back-off.
+                # Max extra wait ≈ 0.5+1.0+1.5 = 3 s in the worst case; typical
+                # first import (AV already cached) adds 0 ms.
+                import os as _os, time as _time
+
+                try:
+                    _expected = _os.path.getsize(self._path)
+                except Exception as _re:
+                    self.finished.emit({
+                        'mode': 'standard', 'detected': [], 'bboxes': [],
+                        'polylines': [], 'scale': 1.0,
+                        'error': f"Cannot stat file: {_re}", 'dxf_path': '',
+                    })
+                    return
+
+                # ── Phase 1: warm-up read (wait for AV scan to complete) ────────
+                # Retry until we read the expected number of bytes.
+                # Defender may return partial data on the very first read of a
+                # file it hasn't scanned before; subsequent reads are clean.
+                _raw = b''
+                for _attempt in range(4):
+                    try:
+                        with open(self._path, 'rb') as _f:
+                            _raw = _f.read()
+                    except Exception as _re:
+                        self.finished.emit({
+                            'mode': 'standard', 'detected': [], 'bboxes': [],
+                            'polylines': [], 'scale': 1.0,
+                            'error': f"Cannot read file: {_re}", 'dxf_path': '',
+                        })
+                        return
+                    if len(_raw) >= _expected:
+                        break
+                    _time.sleep(0.5 * (_attempt + 1))   # 0.5 s, 1.0 s, 1.5 s
+
+                # ── Phase 2: parse with readfile() ──────────────────────────────
+                # After Phase 1 the file is in the OS page cache and the AV scan
+                # result is cached — readfile() reads from cache with no Defender
+                # interference.  readfile() is the path that always works on the
+                # 2nd import; we now guarantee it gets clean data on the 1st too.
+                try:
+                    _doc = _ezdxf.readfile(self._path)
+                except Exception as _pe:
+                    self.finished.emit({
+                        'mode': 'standard', 'detected': [], 'bboxes': [],
+                        'polylines': [], 'scale': 1.0,
+                        'error': f"Cannot parse DXF: {_pe}", 'dxf_path': '',
+                    })
+                    return
+
+                # Try Nova parser first — pass pre-loaded doc, no second file read
                 elements, boqs, error = parse_nova_drawing(
                     self._path,
                     casting_height_mm=self._casting_h,
                     product_height_mm=self._product_h,
+                    doc=_doc,
                 )
                 if elements:
                     self.finished.emit({
@@ -1181,9 +1404,9 @@ class _DXFWorker(QThread):
                         'elements': elements, 'boqs': boqs, 'error': error,
                     })
                     return
-                # No Nova labels found — use standard geometric parser
+                # No Nova labels found — use standard geometric parser, same doc
                 detected, bboxes, polylines, scale = parse_dxf_full(
-                    self._path, self._casting_h)
+                    self._path, self._casting_h, doc=_doc)
                 self.finished.emit({
                     'mode': 'standard',
                     'detected': detected, 'bboxes': bboxes,
@@ -1205,6 +1428,25 @@ class _DXFWorker(QThread):
                 'detected': [], 'bboxes': [], 'polylines': [], 'scale': 1.0,
                 'error': str(ex), 'dxf_path': '',
             })
+
+
+# ---------- PDF Worker — Nova box-culvert PDF parsing ----------
+
+class _PDFWorker(QThread):
+    """Runs parse_nova_pdf on a background thread so the UI stays responsive."""
+    finished = pyqtSignal(object)   # emits (elements, boqs, error_str)
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self._path = path
+
+    def run(self):
+        try:
+            from src.parsers.pdf_parser import parse_nova_pdf
+            elements, boqs, error = parse_nova_pdf(self._path)
+            self.finished.emit((elements, boqs, error))
+        except Exception as ex:
+            self.finished.emit(([], [], str(ex)))
 
 
 # ---------- Main Window ----------
@@ -1275,9 +1517,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_elements(),        "  Elements  ")
         self.tabs.addTab(self._tab_drawing_preview(), "  Drawing Preview  ")
         self.tabs.addTab(self._tab_3d_view(),         "  3D View  ")
-        self.tabs.addTab(self._tab_config(),          "  Configuration  ")
         self.tabs.addTab(self._tab_boq(),             "  BOQ Results  ")
         self.tabs.addTab(self._tab_export(),          "  Export  ")
+        # Configuration tab removed — height selection lives in BOQ Results tab.
+        # Still create the widget so panel_height_combo / casting_height_combo exist.
+        self._cfg_widget = self._tab_config()
         # AI Assistant widget created but NOT added to tabs (hidden until ready)
         self._ai_widget = self._tab_ai_assistant()
 
@@ -1354,7 +1598,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.11")
+        version = QLabel("v1.19")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -1539,7 +1783,7 @@ class MainWindow(QMainWindow):
         btn_pdf_browse.clicked.connect(self._browse_pdf)
         pdf_row.addWidget(btn_pdf_browse)
 
-        btn_pdf_import = QPushButton("Open & Review")
+        btn_pdf_import = QPushButton("Import Elements")
         btn_pdf_import.setStyleSheet(BTN_STYLE)
         btn_pdf_import.setFixedWidth(130)
         btn_pdf_import.clicked.connect(self._import_pdf)
@@ -1547,8 +1791,9 @@ class MainWindow(QMainWindow):
         pdf_lay.addLayout(pdf_row)
 
         pdf_note = QLabel(
-            "ℹ  PDF drawings are shown as a visual preview. "
-            "Review the Schedule of Columns / Walls and enter elements manually.")
+            "ℹ  Supports Nova box-culvert PDFs with panel labels "
+            "(BOX CULVERT PLAN / UPPER PIPE PLAN / BOTTOM PIPE PLAN / BOTTOM PANEL PLAN). "
+            "Panel BOQ is extracted automatically — same as DXF import.")
         pdf_note.setWordWrap(True)
         pdf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
         pdf_lay.addWidget(pdf_note)
@@ -1738,6 +1983,22 @@ class MainWindow(QMainWindow):
         btn_refresh_boq.clicked.connect(self._run_optimization)
         hdr_row.addWidget(btn_refresh_boq)
 
+        btn_edit_panels = QPushButton("  ✏  Edit Panels")
+        btn_edit_panels.setStyleSheet(BTN_SECONDARY)
+        btn_edit_panels.setFixedHeight(30)
+        btn_edit_panels.setToolTip(
+            "Select a row in Per-Element Breakdown, then click to edit/add/delete panels")
+        btn_edit_panels.clicked.connect(self._edit_boq_panels)
+        hdr_row.addWidget(btn_edit_panels)
+
+        btn_delete_boq_elem = QPushButton("  🗑  Delete Element")
+        btn_delete_boq_elem.setStyleSheet(BTN_DANGER)
+        btn_delete_boq_elem.setFixedHeight(30)
+        btn_delete_boq_elem.setToolTip(
+            "Select a row in Per-Element Breakdown, then click to remove that element")
+        btn_delete_boq_elem.clicked.connect(self._delete_element_from_boq)
+        hdr_row.addWidget(btn_delete_boq_elem)
+
         btn_view_layout = QPushButton("  View Layout")
         btn_view_layout.setStyleSheet(BTN_SECONDARY)
         btn_view_layout.setFixedHeight(30)
@@ -1810,7 +2071,7 @@ class MainWindow(QMainWindow):
         self._ns_edit_btn.setVisible(False)
         self._ns_edit_btn.setFixedHeight(30)
         self._ns_edit_btn.setToolTip(
-            "Open Elements tab — change panel height in Configuration or edit element dimensions")
+            "Open Elements tab — change panel height in BOQ Results or edit element dimensions")
         self._ns_edit_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
         lay.addWidget(self._ns_edit_btn)
 
@@ -1830,6 +2091,8 @@ class MainWindow(QMainWindow):
         self.boq_detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.boq_detail_table.setStyleSheet(TABLE_STYLE)
         self.boq_detail_table.setAlternatingRowColors(True)
+        self.boq_detail_table.setToolTip("Double-click any row to edit panels for that element")
+        self.boq_detail_table.cellDoubleClicked.connect(lambda r, c: self._edit_boq_panels())
         top_lay.addWidget(self.boq_detail_table)
         splitter.addWidget(top)
 
@@ -2097,12 +2360,113 @@ class MainWindow(QMainWindow):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._elements.pop(row)
+            if row < len(self._boqs):
+                self._boqs.pop(row)
+            if row < len(self._acc_boqs):
+                self._acc_boqs.pop(row)
             self._refresh_element_table()
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
                  "ELEMENT_DELETE",
                  f"{elem.label} ({elem.element_type.value}) "
                  f"{elem.length_mm:.0f}×{elem.width_mm:.0f} mm")
+
+    def _edit_boq_panels(self):
+        """Open EditBOQPanelsDialog for the element row selected in the BOQ detail table."""
+        if not self._boqs:
+            QMessageBox.information(self, "Edit Panels", "Generate BOQ first, then select a row.")
+            return
+        sel = self.boq_detail_table.selectedItems()
+        if not sel:
+            QMessageBox.information(self, "Edit Panels",
+                                    "Select any row in 'Per-Element Breakdown' table first.")
+            return
+        boq_idx = sel[0].data(Qt.ItemDataRole.UserRole)
+        if boq_idx is None or boq_idx >= len(self._boqs):
+            return
+        eboq = self._boqs[boq_idx]
+        panel_h = float(self.panel_height_combo.currentText())
+        dlg = EditBOQPanelsDialog(eboq, panel_h, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        updated_panels = dlg.get_updated_panels()
+        if updated_panels is None:
+            return
+        eboq.panels = updated_panels
+        self._project = ProjectBOQ(
+            project_name       = self.project_name_edit.text().strip(),
+            client_name        = self.client_name_edit.text().strip(),
+            client_address     = self.client_addr_edit.text().strip(),
+            ipo_no             = self.ipo_edit.text().strip(),
+            date               = self.date_edit.text().strip(),
+            element_boqs       = self._boqs,
+            panel_height_mm    = panel_h,
+            num_sets           = self.num_sets_spin.value(),
+            gst_enabled        = self.gst_check.isChecked(),
+            freight_amount     = self.freight_spin.value(),
+            panel_rate_per_sqm = self.rate_panel.value(),
+        )
+        self._agg = aggregate_project_boq(self._project)
+        self._acc_boqs = []
+        for elem, boq in zip(self._elements, self._boqs):
+            self._acc_boqs.append(calculate_accessories(elem, boq, panel_h))
+        self._acc_agg = aggregate_accessories(self._acc_boqs, self.num_sets_spin.value())
+        self._refresh_boq_tables()
+        from src.auth.auth_manager import log_action as _log
+        _log(self._user["username"], self._user["full_name"],
+             "BOQ_PANELS_EDIT",
+             f"{eboq.element.label}: {len(updated_panels)} panel types")
+
+    def _delete_element_from_boq(self):
+        """Delete the element whose row is selected in the BOQ Per-Element Breakdown table."""
+        if not self._boqs:
+            QMessageBox.information(self, "Delete Element",
+                                    "Generate BOQ first, then select a row to delete.")
+            return
+        sel = self.boq_detail_table.selectedItems()
+        if not sel:
+            QMessageBox.information(self, "Delete Element",
+                                    "Select any row in 'Per-Element Breakdown' table first.")
+            return
+        boq_idx = sel[0].data(Qt.ItemDataRole.UserRole)
+        if boq_idx is None or boq_idx >= len(self._boqs):
+            return
+        elem_label = self._boqs[boq_idx].element.label
+        reply = QMessageBox.question(
+            self, "Confirm Delete",
+            f"Remove element '{elem_label}' from the project?\n\n"
+            f"This will remove it from the BOQ and element list.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._boqs.pop(boq_idx)
+        if boq_idx < len(self._elements):
+            self._elements.pop(boq_idx)
+        if boq_idx < len(self._acc_boqs):
+            self._acc_boqs.pop(boq_idx)
+        panel_h = float(self.panel_height_combo.currentText())
+        self._project = ProjectBOQ(
+            project_name       = self.project_name_edit.text().strip(),
+            client_name        = self.client_name_edit.text().strip(),
+            client_address     = self.client_addr_edit.text().strip(),
+            ipo_no             = self.ipo_edit.text().strip(),
+            date               = self.date_edit.text().strip(),
+            element_boqs       = self._boqs,
+            panel_height_mm    = panel_h,
+            num_sets           = self.num_sets_spin.value(),
+            gst_enabled        = self.gst_check.isChecked(),
+            freight_amount     = self.freight_spin.value(),
+            panel_rate_per_sqm = self.rate_panel.value(),
+        )
+        self._agg = aggregate_project_boq(self._project) if self._boqs else None
+        self._acc_agg = aggregate_accessories(self._acc_boqs, self.num_sets_spin.value()) if self._acc_boqs else None
+        self._refresh_element_table()
+        self._refresh_boq_tables()
+        from src.auth.auth_manager import log_action as _log
+        _log(self._user["username"], self._user["full_name"],
+             "ELEMENT_DELETE",
+             f"{elem_label} (from BOQ tab)")
 
     def _refresh_element_table(self):
         self.elem_table.setRowCount(len(self._elements))
@@ -2205,40 +2569,125 @@ class MainWindow(QMainWindow):
             self.pdf_path_edit.setText(path)
 
     def _import_pdf(self):
+        try:
+            self._import_pdf_impl()
+        except Exception as _ex:
+            import traceback as _tb
+            QMessageBox.critical(
+                self, "PDF Import Error",
+                f"Unexpected error:\n\n{_ex}\n\n{_tb.format_exc()}"
+            )
+
+    def _import_pdf_impl(self):
         path = self.pdf_path_edit.text().strip()
         if not path:
             QMessageBox.warning(self, "No File", "Please select a PDF file first.")
             return
 
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        try:
-            dlg = PDFImportDialog(path, self)
-        except Exception as ex:
-            self.unsetCursor()
-            QMessageBox.critical(self, "PDF Error", f"Cannot open PDF:\n{ex}")
-            return
-        finally:
-            self.unsetCursor()
+        panel_h = float(self.panel_height_combo.currentText())
 
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            elements = dlg.get_elements()
+        progress = QProgressDialog("Reading PDF drawing…", None, 0, 0, self)
+        progress.setWindowTitle("PDF Import")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QApplication.processEvents()
+
+        def _on_pdf_done(result):
+            try:
+                _on_pdf_done_inner(result)
+            except Exception as _ex:
+                import traceback as _tb
+                progress.close()
+                QMessageBox.critical(
+                    self, "PDF Import Error",
+                    f"Unexpected error during PDF import:\n\n{_ex}\n\n{_tb.format_exc()}"
+                )
+
+        def _on_pdf_done_inner(result):
+            progress.close()
+            elements, boqs, error = result
+
+            if error:
+                QMessageBox.critical(self, "PDF Import Error", error)
+                return
+
+            if not elements:
+                QMessageBox.information(
+                    self, "No Elements Found",
+                    "No panel sections were found in this PDF.\n\n"
+                    "Expected headers: 'BOX CULVERT PLAN', 'UPPER PIPE PLAN', "
+                    "'BOTTOM PIPE PLAN', 'BOTTOM PANEL PLAN'.\n\n"
+                    "Ensure the PDF is a Nova formwork drawing with embedded text."
+                )
+                return
+
+            if self._elements:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Nova PDF Import")
+                msg.setIcon(QMessageBox.Icon.Question)
+                msg.setText(
+                    f"<b>{len(elements)} element(s) found in PDF.</b><br><br>"
+                    f"This project currently has <b>{len(self._elements)} existing "
+                    f"element(s)</b>.<br>What would you like to do?"
+                )
+                replace_btn = msg.addButton(
+                    "Replace All  (recommended)", QMessageBox.ButtonRole.AcceptRole)
+                add_btn     = msg.addButton(
+                    "Add to Existing", QMessageBox.ButtonRole.AcceptRole)
+                cancel_btn  = msg.addButton(
+                    "Cancel", QMessageBox.ButtonRole.RejectRole)
+                msg.setDefaultButton(replace_btn)
+                msg.exec()
+                clicked = msg.clickedButton()
+                if clicked == cancel_btn or clicked is None:
+                    return
+                if clicked == replace_btn:
+                    self._elements.clear()
+                    self._boqs.clear()
+                    self._acc_boqs.clear()
+                    self._project = ProjectBOQ()
+                    self._agg     = None
+                    self._acc_agg = None
+                    self._refresh_element_table()
+
             added = 0
-            for elem in elements:
+            for elem, boq in zip(elements, boqs):
                 existing_labels = [e.label for e in self._elements]
                 if elem.label in existing_labels:
                     elem.label = elem.label + "_pdf"
                 self._elements.append(elem)
+                self._boqs.append(boq)
                 added += 1
+
+            self._project = ProjectBOQ(
+                project_name=self.project_name_edit.text().strip(),
+                client_name=self.client_name_edit.text().strip(),
+                panel_height_mm=panel_h,
+                element_boqs=list(self._boqs),
+            )
+
+            self._is_nova_drawing = True
             self._refresh_element_table()
+            self._auto_run_boq_silent(nova_mode=True)
+            self.tabs.setCurrentIndex(1)
+
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
                  "PDF_IMPORT",
-                 f"{added} element(s) from: {Path(path).name}")
+                 f"{added} element(s) (BOQ from PDF) from: {Path(path).name}")
+
             QMessageBox.information(
-                self, "Elements Added",
-                f"{added} element(s) imported from PDF.\n"
-                "Review them in the Elements tab, then click Compute BOQ."
+                self, "PDF Import Complete",
+                f"✓  {added} element(s) imported — BOQ ready.\n\n"
+                f"Panel quantities read directly from PDF drawing.\n\n"
+                f"Panel height used: {int(panel_h)} mm\n\n"
+                f"Change Panel Height / Sets in the BOQ Results tab to update area."
             )
+
+        self._pdf_worker = _PDFWorker(path, parent=self)
+        self._pdf_worker.finished.connect(_on_pdf_done)
+        self._pdf_worker.start()
 
     def _import_dwg(self):
         path = self.dwg_path_edit.text().strip()
@@ -2403,7 +2852,7 @@ class MainWindow(QMainWindow):
             self._is_nova_drawing = False
             self._refresh_element_table()
             self._auto_run_boq_silent()
-            self.tabs.setCurrentIndex(5)  # Jump to BOQ Results tab
+            self.tabs.setCurrentIndex(1)  # Show Elements tab after import
 
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
@@ -2453,9 +2902,11 @@ class MainWindow(QMainWindow):
                     "Add to Existing", QMessageBox.ButtonRole.AcceptRole)
                 cancel_btn  = msg.addButton(
                     "Cancel", QMessageBox.ButtonRole.RejectRole)
+                msg.setDefaultButton(replace_btn)
                 msg.exec()
                 clicked = msg.clickedButton()
-                if clicked == cancel_btn:
+                # None means dialog closed by Escape/X — treat as Cancel
+                if clicked == cancel_btn or clicked is None:
                     return
                 if clicked == replace_btn:
                     self._elements.clear()
@@ -2502,7 +2953,7 @@ class MainWindow(QMainWindow):
             self._is_nova_drawing = True
             self._refresh_element_table()
             self._auto_run_boq_silent(nova_mode=True)
-            self.tabs.setCurrentIndex(5)  # jump to BOQ Results tab
+            self.tabs.setCurrentIndex(1)  # Show Elements tab after import
 
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
@@ -2538,6 +2989,34 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Elements",
                                 "Please add at least one structural element first.")
             self.tabs.setCurrentIndex(1)  # Elements tab
+            return
+
+        # Nova drawings: panel quantities and dimensions come directly from the drawing.
+        # Running compute_boq would replace them with standard optimizer results — wrong.
+        # Instead, update only the panel heights / areas for the selected height and refresh.
+        if self._is_nova_drawing:
+            self._regenerate_boq_if_elements_present()
+            self.view_3d.load_elements(
+                self._elements,
+                bboxes=self._element_bboxes if self._element_bboxes else None,
+                scale=1.0,
+            )
+            self.tabs.setCurrentIndex(4)
+            panel_h = float(self.panel_height_combo.currentText())
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "BOQ_COMPUTED",
+                 f"Nova refresh | {len(self._elements)} elements | "
+                 f"{self._agg.get('total_area_sqm', 0):.1f} sqm | "
+                 f"Panel: {panel_h:.0f} mm")
+            n_warn = sum(1 for a in self._acc_boqs if a.high_wall_warning)
+            msg = (f"BOQ refreshed for {len(self._elements)} element(s).\n"
+                   f"Panel height: {panel_h:.0f} mm\n"
+                   f"Total panel area: {self._agg.get('total_area_sqm', 0):.3f} sqm\n\n"
+                   f"Panel quantities are from the Nova drawing — only area updated.")
+            if n_warn:
+                msg += f"\n\n⚠ {n_warn} element(s) exceed 4500mm height — engineer review required!"
+            QMessageBox.information(self, "BOQ Refreshed", msg)
             return
 
         panel_h = float(self.panel_height_combo.currentText())
@@ -2599,7 +3078,7 @@ class MainWindow(QMainWindow):
             scale=1.0,
         )
 
-        self.tabs.setCurrentIndex(5)  # Jump to BOQ Results tab
+        self.tabs.setCurrentIndex(4)  # Jump to BOQ Results tab (index 4 after Config tab removed)
 
         n_warn = sum(1 for a in self._acc_boqs if a.high_wall_warning)
         msg = (f"BOQ generated for {len(self._elements)} element(s).\n"
@@ -2635,6 +3114,18 @@ class MainWindow(QMainWindow):
                 except Exception:
                     return  # bail silently on any failure
             self._boqs = new_boqs
+        else:
+            # Nova mode: quantities and panel widths come from the drawing — don't touch them.
+            # Only update height and recompute area so the selected panel height is reflected.
+            import re as _re
+            for boq in self._boqs:
+                for panel in boq.panels:
+                    panel.height_mm = panel_h
+                    panel.area_sqm = round((panel.width_mm * panel_h) / 1_000_000, 6)
+                    # Relabel: preserve prefix (OC80, IC100, 600, …) and replace height suffix
+                    _m = _re.match(r'^(.+?)X\d+(?:\.\d+)?$', panel.size_label)
+                    if _m:
+                        panel.size_label = f"{_m.group(1)}X{int(panel_h)}"
         self._project = ProjectBOQ(
             project_name      = self.project_name_edit.text().strip(),
             client_name       = self.client_name_edit.text().strip(),
@@ -2733,6 +3224,10 @@ class MainWindow(QMainWindow):
         self._ph_syncing = False
         if self._boqs and self._acc_boqs:
             self._acc_agg = aggregate_accessories(self._acc_boqs, value)
+            # Keep project.num_sets in sync so export matches screen summary
+            if self._project:
+                self._project.num_sets = value
+                self._agg = aggregate_project_boq(self._project)
             self._refresh_boq_tables()
 
     def _refresh_boq_tables(self):
@@ -2748,7 +3243,7 @@ class MainWindow(QMainWindow):
         rows = []
         ns_elem_labels: list[str] = []
 
-        for eboq in self._boqs:
+        for boq_idx, eboq in enumerate(self._boqs):
             _panel_area = eboq.total_panel_area_sqm
             elem_lbl = (
                 f"{eboq.element.label} ({eboq.element.element_type.value})\n"
@@ -2756,7 +3251,6 @@ class MainWindow(QMainWindow):
                 f"Panel Area = {_panel_area:.3f} sqm\n"
                 f"Casting H = {eboq.element.height_mm:.0f} mm  Qty = {eboq.element.quantity}"
             )
-            # Flag this element if ANY of its panels is non-standard
             if any(not is_catalog_panel(p) for p in eboq.panels):
                 if eboq.element.label not in ns_elem_labels:
                     ns_elem_labels.append(eboq.element.label)
@@ -2774,13 +3268,15 @@ class MainWindow(QMainWindow):
                      warn_txt],
                     is_ns,
                     p.is_corner,
+                    boq_idx,      # store so Edit Panels knows which element
                 ))
 
         self.boq_detail_table.setRowCount(len(rows))
-        for r, (row, is_ns, is_oc) in enumerate(rows):
+        for r, (row, is_ns, is_oc, boq_idx) in enumerate(rows):
             for c, val in enumerate(row):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setData(Qt.ItemDataRole.UserRole, boq_idx)  # every cell carries index
                 if is_ns:
                     item.setBackground(NS_BG)
                     if c in (1, 5):
@@ -2830,7 +3326,7 @@ class MainWindow(QMainWindow):
                 self.boq_summary_table.setItem(r, c, item)
 
         # --- Non-standard banner ---
-        total_ns = sum(1 for _, is_ns, _ in rows if is_ns)
+        total_ns = sum(1 for _, is_ns, _oc, _bi in rows if is_ns)
         if total_ns:
             labels_str = ", ".join(ns_elem_labels[:5])
             if len(ns_elem_labels) > 5:
@@ -2839,7 +3335,7 @@ class MainWindow(QMainWindow):
                 f"⚠  {total_ns} NON-STANDARD panel size(s) found — highlighted in orange.  "
                 f"Affected elements: {labels_str}\n"
                 f"Standard heights are 3705 / 2470 / 1235 mm only.  "
-                f"Fix: change Panel Height in Configuration tab to a standard size and Re-run BOQ.  "
+                f"Fix: change Panel Height in BOQ Results tab to a standard size and Re-run BOQ.  "
                 f"Or use Elements tab → Edit to adjust individual element dimensions."
             )
             self.nonstandard_banner.setVisible(True)
@@ -2886,7 +3382,7 @@ class MainWindow(QMainWindow):
     def _export_pdf(self):
         if not self._project or not self._boqs:
             QMessageBox.warning(self, "No Data",
-                                "Please run optimization first (Configuration tab).")
+                                "Please run optimization first (BOQ Results tab).")
             return
 
         path, _ = QFileDialog.getSaveFileName(
@@ -2911,7 +3407,7 @@ class MainWindow(QMainWindow):
     def _export_quotation_pdf(self):
         if not self._project or not self._boqs:
             QMessageBox.warning(self, "No Data",
-                                "Please run optimization first (Configuration tab).")
+                                "Please run optimization first (BOQ Results tab).")
             return
 
         path, _ = QFileDialog.getSaveFileName(
@@ -2942,7 +3438,7 @@ class MainWindow(QMainWindow):
     def _export_excel(self):
         if not self._project or not self._boqs:
             QMessageBox.warning(self, "No Data",
-                                "Please run optimization first (Configuration tab).")
+                                "Please run optimization first (BOQ Results tab).")
             return
 
         path, _ = QFileDialog.getSaveFileName(
@@ -2981,7 +3477,7 @@ class MainWindow(QMainWindow):
         """Show 3D panel assembly dialog for the currently selected element."""
         if not self._elements or not self._boqs:
             QMessageBox.warning(self, "No BOQ",
-                                "Please run optimization first (Configuration tab).")
+                                "Please run optimization first (BOQ Results tab).")
             return
 
         row = self.elem_table.currentRow()
@@ -3089,7 +3585,7 @@ class MainWindow(QMainWindow):
         """Export panel layout drawings for all elements as a multi-page PDF."""
         if not self._elements or not self._boqs:
             QMessageBox.warning(self, "No BOQ",
-                                "Please run optimization first (Configuration tab).")
+                                "Please run optimization first (BOQ Results tab).")
             return
 
         path, _ = QFileDialog.getSaveFileName(

@@ -1,0 +1,3 @@
+[2026-06-03 15:14:09]  User: admin (Administrator)  |  Action: LOGIN  |  Details: Test from audit update  |  Host: MalviyaMac.local  |  IP: 172.20.10.11
+[2026-06-03 15:14:09]  User: admin (Administrator)  |  Action: BOQ_COMPUTED  |  Details: Project X | 44 elements | 2240 sqm  |  Host: MalviyaMac.local  |  IP: 172.20.10.11
+[2026-06-03 15:14:09]  User: rajan.kumar (Rajan Kumar)  |  Action: DXF_IMPORT  |  Details: Drawing2.dxf  |  Host: MalviyaMac.local  |  IP: 172.20.10.11

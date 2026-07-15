@@ -1,0 +1,78 @@
+Section,#,Feature / Requirement,Status,Version Delivered,Notes / Limitations
+Objective,1,Automate BOQ generation from DWG / DXF drawings,Done,v1.14,"DXF: parse_nova_drawing + parse_dxf_full. DWG: user converts via ODA/AutoCAD first, then imports DXF."
+Objective,2,Eliminate manual panel calculation errors,Done,v1.1,"DP-based optimizer verified against Nova Excel quotations for C1 (900×600) and C2 (960×600)."
+Objective,3,Professional Nova-branded quotations (Excel + PDF) instantly,Done,v1.3,"PDF: Nova blue theme + logo + client info + per-element panel table + cost breakdown. Excel: COLUMN sheet format with formulas + DAYS BOQ + QUOTATION tabs."
+Objective,4a,Handle Columns,Done,v1.1,Auto-detected from DXF and supported in all BOQ/export flows.
+Objective,4b,Handle Walls / Shear Walls,Done,v1.1,Auto-detected from DXF. Straight walls with OC80 end corners.
+Objective,4c,Handle Box Culverts,Done,v1.14 + v1.19,"BOQ engine handles all 4 inner faces with IC100 + OC80. Nova DXF import works. PDF import added in v1.19."
+Objective,4d,Handle Drains,Done (engine),v1.3,"ElementType.DRAIN exists. BOQ logic: 3 inner faces, IC100×2 bottom corners. No auto-detect from DXF yet — must add manually or via text input."
+Objective,4e,Handle Monolithic,Partial,v1.3,"ElementType.MONOLITHIC defined. Treated as combined element set. BOQ uses column/wall sub-elements. No dedicated auto-detection from DXF."
+Objective,5,T/L/C wall junctions with IC100 auto-assignment,Partial,v1.3,"Engine fully supports L/T/C junction types (IC100 at inner corners). BOQ and accessories correct. Limitation: DXF auto-detection of junction shape not implemented — junction type must be set manually in element editor."
+Objective,6,Multi-user access with role-based control,Done,v1.2,"Login system: Admin / Engineer / Sales / View-only roles. Audit log on every BOQ action. Central DB option for shared access."
+Objective,7,AI assistant / real-time insights (optional),Not Done,—,"Marked optional in proposal. Not in Phase 1 scope. Requires Claude API integration (separate add-on, ₹50,000)."
+Feature A,A1,Import AutoCAD DWG / DXF directly,Done,v1.14,"DXF: ezdxf with AV-scan-safe BytesIO read (no first-import mismatch). DWG: binary format (AC1032) cannot be read by ezdxf — user converts via ODA File Converter or AutoCAD SaveAs DXF. Conversion guide shown in UI."
+Feature A,A2,Auto-detect columns from drawing,Done,v1.1,"LWPOLYLINE bounding box, aspect ratio ≤ 4:1, both dims 150–1500mm."
+Feature A,A3,Auto-detect walls / shear walls from drawing,Done,v1.1,"LWPOLYLINE bounding box, long/short ratio ≥ 3:1."
+Feature A,A4,Dimension extraction — DIMENSION entity annotations,Done,v1.1,Reads DIMENSION entities for scale calibration.
+Feature A,A5,Dimension extraction — Polyline bounding box geometry,Done,v1.1,Primary dimension source from LWPOLYLINE bbox.
+Feature A,A6,Dimension extraction — Scale detection from $INSUNITS header,Done,v1.1,Reads DXF $INSUNITS for mm/cm/m conversion.
+Feature A,A7,Dimension correction: concrete face (not stirrup cage),Done,v1.1,"Parser uses outer polyline bbox which corresponds to the formwork face, not rebar cage."
+Feature A,A8,Smart label detection (C1 / SW1 / W1 etc.),Done,v1.2,"Regex + proximity match to nearby TEXT/MTEXT entities. Multi-floor prefixes: 1F, 2F, TF, RF, BF, LG, PH, B1–B9."
+Feature A,A9,Manual review screen before BOQ,Done,v1.1,"Element Review dialog: confirm / correct label, dimensions, type, qty before accepting."
+Feature B,B1,DP-based panel optimizer,Done,v1.1,Dynamic programming covering all standard panel widths. Verified against Nova Excel quotations.
+Feature B,B2,Symmetric panel preference (500+500 over 600+400 for 1000mm),Partial,v1.1,"_combo_score() prefers balanced splits. Known limitation: for some dimensions (e.g. 1000mm) optimizer may pick 600+400 instead of 500+500. Root cause tracked; full symmetric enforcement is a pending improvement."
+Feature B,B3,OC80 corner panels at all 4 column corners,Done,v1.1,Verified.
+Feature B,B4,OC80 at 4 wall end corners,Done,v1.1,Verified.
+Feature B,B5,IC100 for T/L/C wall junctions,Done (engine),v1.3,"L: 1 IC100 per row. T: 2 IC100 per row. C: 2 IC100 per row. Quantities correct in BOQ and accessories. Junction type must be set manually — not auto-detected from DXF geometry."
+Feature B,B6,Panel stacking for heights > single panel height,Done,v1.1,"rows = ceil(element_height / panel_height). Each row uses same panel combination."
+Feature B,B7,Spacer gap management (up to 50mm allowed),Done,v1.1,MAX_SPACER_GAP = 50mm in optimizer. Panels accepted if residual gap ≤ 50mm.
+Feature B,B8,Configurable panel catalog (widths 600–40mm / heights 3200-1228mm),Done,v1.1,"config/panel_config.json: widths [600,500,490,440,400,350,340,300,275,250,240,230,200,150,125,100,40], heights [3200,2470,1228,3000]."
+Feature B,B9,Project-level aggregation with quantity multiplier per element set,Done,v1.1,"num_sets spinner in BOQ tab. aggregate_project_boq() sums across all elements × sets."
+Feature C,C1,Column — OC80×4 corners,Done,v1.1,Verified against client samples.
+Feature C,C2,Wall / Shear Wall — OC80×4 end corners,Done,v1.1,Verified.
+Feature C,C3,L-Wall — OC80+IC100 at 1 junction,Done (engine),v1.3,BOQ logic correct. Junction type = L must be set manually in element editor.
+Feature C,C4,T-Wall — OC80+IC100 at 2 junctions,Done (engine),v1.3,BOQ logic correct. Junction type = T must be set manually.
+Feature C,C5,C/U-Wall — OC80+IC100 at 2 inner corners,Done (engine),v1.3,BOQ logic correct. Junction type = C must be set manually.
+Feature C,C6,Box Culvert — IC100×4 inner + OC80×4 outer,Done,v1.14 + v1.19,"Full BOQ from Nova DXF and Nova PDF. 4 inner faces computed correctly."
+Feature C,C7,Drain — IC100×2 bottom + OC80×4 top,Done (engine),v1.3,"BOQ logic implemented (3 faces, IC100 at 2 bottom inner corners). Manual input required — no DXF auto-detection."
+Feature C,C8,Monolithic — combined element set,Partial,v1.3,"ElementType.MONOLITHIC defined. No dedicated BOQ logic beyond combining sub-elements. Engineering review required for actual use."
+Feature D,D1,Column accessories — PIN 50mm horizontal,Done,v1.5,Accessories calculator: pins_50 = qty per column element.
+Feature D,D2,Column accessories — PIN 80mm vertical stack,Done,v1.5,pins_80 based on rows.
+Feature D,D3,Column accessories — PIN 20mm OC corners,Done,v1.5,pins_20 at OC corners.
+Feature D,D4,Wall accessories — Waller rows = ceil(H/500) + 1,Done,v1.5,Verified formula.
+Feature D,D5,Wall accessories — Tierod spacing ~600mm horizontal,Done,v1.5,tierod_positions = ceil(length/600).
+Feature D,D6,Wall accessories — Tierod length = wall_thickness + 300mm (standard sizes),Done,v1.5,Rounded to nearest standard size. Note shown: ESTIMATED — user must verify.
+Feature D,D7,Wall accessories — Wing Nuts 2 per tierod,Done,v1.5,Correct.
+Feature D,D8,Wall accessories — PVC Cones 2 per tierod,Done,v1.5,Correct.
+Feature D,D9,High-wall warning (>4500mm) flagged for engineer review,Done,v1.5,Warning shown in UI BOQ tab and printed in PDF export.
+Feature E,E1,PDF Quotation — Nova-branded (blue theme + logo),Done,v1.3,Nova blue header + Nova Formworks logo + RLAI branding.
+Feature E,E2,PDF — Client info / project header,Done,v1.3,Project name / client / address / IPO no. / date on cover page.
+Feature E,E3,PDF — Per-element panel table,Done,v1.3,One section per element with panel size breakdown.
+Feature E,E4,PDF — Consolidated summary,Done,v1.3,Total panels / area / sets across all elements.
+Feature E,E5,PDF — Accessories section,Done,v1.5,PIN and WALLER+TIEROD tables per element.
+Feature E,E6,PDF — Cost breakdown with GST,Done,v1.3,"Panel cost + GST 18% (toggle) + freight = grand total."
+Feature E,E7,Excel BOQ — Matches Nova COLUMN sheet format,Done,v1.3,"panel sizes, sets, heights, summary table with formulas, Grand Total."
+Feature E,E8,Excel — Days BOQ Sheet (panel reuse/deployment schedule),Done (estimate),v1.3,"Day-1 / Day-2 / Day-3 equal 1/3 split estimate. Note: labelled as ESTIMATE in sheet — actual deployment schedule requires site planning input."
+Feature E,E9,Panel Layout Drawing — Column unrolled strip view,Done,v1.4,matplotlib-based unrolled 4-face strip + plan cross-section. Exported as PNG.
+Feature E,E10,Panel Layout Drawing — Wall elevation with waller/tierod markers,Done,v1.4,"Elevation view with red waller lines + blue tierod markers. Exported as PNG/embedded in UI."
+Feature F,F1,Add element manually,Done,v1.1,Add Element form in Elements tab.
+Feature F,F2,Edit element manually (dimensions / label / type),Done,v1.1 + v1.18,"Edit in Elements tab. Edit Panels in BOQ tab (v1.18)."
+Feature F,F3,Delete element,Done,v1.18,Delete Element button in BOQ tab (v1.18). Syncs elements + BOQs + accessories.
+Feature F,F4,Adjust panel height,Done,v1.1,"Panel Height combo (3200 / 2470 / 1228 / 3000mm). For Nova drawings: only area updates, quantities preserved from drawing."
+Feature F,F5,Adjust number of sets,Done,v1.1,num_sets spinner in BOQ tab.
+Feature F,F6,Quick text input ("5 columns 300×450 height 3000"),Done,v1.1,Text parser in Elements tab.
+Feature F,F7,All rates configurable (panel/sqm / waller/rm / tierod/rm / props/unit),Done,v1.3,Rate fields in BOQ Results tab.
+Feature F,F8,GST toggle,Done,v1.1,GST checkbox in BOQ Results tab.
+Feature F,F9,Freight amount input,Done,v1.1,Freight spinner in BOQ Results tab.
+Feature F,F10,Version history via Git (developer level),Done,ongoing,Full git history maintained. Not exposed in UI — developer access only.
+Feature G,G1,Floor label per element (GF / 1F / 2F / Terrace etc.),Done,v1.2,"Floor label field on each element. DXF parser reads floor prefix (1F, 2F, TF, RF, BF, LG, PH, B1–B9) from element label."
+Feature G,G2,Different column sizes per floor tracked separately,Done,v1.2,Each element stores label + floor — elements at same floor can have different dimensions.
+Feature G,G3,BOQ generated floor-wise or full-building,Partial,v1.2,"All elements always included in BOQ. No floor-wise filter/split in UI. User can manually delete elements not needed, or filter by naming convention."
+PDF Import,—,Nova box-culvert PDF import (BOX CULVERT / UPPER PIPE / BOTTOM PIPE / BOTTOM PANEL),Done,v1.19,"parse_nova_pdf() reads panel labels from CAD-exported PDFs. Same Replace/Add/Cancel flow as DXF import. Quantities preserved; _is_nova_drawing=True guard active."
+Security,—,api_config.json — no API keys in distributed ZIP,Done,all versions,"File always contains only {server_url: '', central_db_path: ''}. Verified on every ZIP build."
+Security,—,Drawing data processed locally — not sent to third parties,Done,all versions,100% offline. No external calls from core app.
+Security,—,Audit trail — all BOQ actions logged with user + timestamp,Done,v1.2,auth_manager.log_action() called on every import / BOQ compute / export / delete.
+Deployment,—,Windows installer (install_windows_nova_updatedbranding.bat),Done,v1.18,Admin privilege check. Creates venv + installs deps + desktop shortcut.
+Deployment,—,Application launcher (run_novoform.bat),Done,v1.18,Double-click launcher. Checks venv before starting.
+Deployment,—,Cloud-based deployment (optional add-on),Not Done,—,"Not in Phase 1 scope. Optional add-on: ₹1,50,000 one-time + ₹15,000/month."
+Deployment,—,Mobile app (optional add-on),Not Done,—,"Not in Phase 1 scope. Optional add-on: ₹1,00,000 one-time."

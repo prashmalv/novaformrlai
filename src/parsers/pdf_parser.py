@@ -1,307 +1,259 @@
 """
-PDF drawing parser.
-- render_pdf_page : renders page to PNG for visual preview
-- extract_elements_ai : uses Claude Vision to auto-detect structural elements
+PDF parser for Nova formwork drawings.
+
+Extracts panel BOQ data from PDFs that already contain labelled panel
+schedules (e.g. "OC80X2400", "600X1235") embedded as text in CAD-exported PDFs.
+
+Supports the layout: BOX CULVERT PLAN / UPPER PIPE PLAN / BOTTOM PIPE PLAN
+on a single sheet with right-side panel legends.
 """
-import base64
-import json
-import os
+
 import re
-from pathlib import Path
+from collections import defaultdict
 
-import fitz  # pymupdf
+import fitz  # PyMuPDF — already in requirements
 
-_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "api_config.json"
-
-
-# ── API key management ────────────────────────────────────────────────────────
-
-def get_api_key() -> str | None:
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if key:
-        return key
-    if _CONFIG_PATH.exists():
-        try:
-            data = json.loads(_CONFIG_PATH.read_text())
-            return data.get("anthropic_api_key", "").strip() or None
-        except Exception:
-            pass
-    return None
-
-
-def save_api_key(key: str) -> None:
-    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    existing = {}
-    if _CONFIG_PATH.exists():
-        try:
-            existing = json.loads(_CONFIG_PATH.read_text())
-        except Exception:
-            pass
-    existing["anthropic_api_key"] = key.strip()
-    _CONFIG_PATH.write_text(json.dumps(existing, indent=2))
-
-
-# ── PDF rendering ─────────────────────────────────────────────────────────────
-
-def render_pdf_page(pdf_path: str, page_num: int = 0, dpi: int = 150) -> tuple[bytes, int, int]:
-    """Render a PDF page to PNG bytes. Returns (png_bytes, width, height)."""
-    doc = fitz.open(pdf_path)
-    page_num = min(page_num, len(doc) - 1)
-    page = doc[page_num]
-    mat = fitz.Matrix(dpi / 72, dpi / 72)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    return pix.tobytes("png"), pix.width, pix.height
-
-
-def get_page_count(pdf_path: str) -> int:
-    return len(fitz.open(pdf_path))
-
-
-def extract_title_block(pdf_path: str) -> dict:
-    """Extract whatever text is available from vector layers (title block, notes)."""
-    doc = fitz.open(pdf_path)
-    page = doc[0]
-    text = page.get_text("text")
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    result = {"project_name": "", "drawing_title": "", "drawing_no": "", "client": ""}
-    for i, line in enumerate(lines):
-        lu = line.upper()
-        nxt = lines[i + 1] if i + 1 < len(lines) else ""
-        if "PROJECT:" in lu:
-            result["project_name"] = nxt
-        elif "DRAWING TITLE:" in lu:
-            result["drawing_title"] = nxt
-        elif "DRAWING NO:" in lu:
-            result["drawing_no"] = nxt
-        elif "CLIENT:" in lu:
-            result["client"] = nxt
-    return result
-
-
-# ── Offline CV extraction (cv2 + easyocr) ────────────────────────────────────
-
-_LABEL_RE  = re.compile(r'^(SW|SH|WW|CC|[CWRB])\d{1,3}[a-zA-Z]?$', re.I)
-_DIM_RE    = re.compile(r'(\d{2,4})\s*[xX×]\s*(\d{2,4})')
-_SINGLE_RE = re.compile(r'^(\d{3,5})$')
-
-_easyocr_reader = None   # cached so model loads only once per session
-
-
-def _get_reader():
-    global _easyocr_reader
-    if _easyocr_reader is None:
-        import easyocr
-        _easyocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-    return _easyocr_reader
-
-
-def _bbox_center(bbox):
-    xs = [p[0] for p in bbox]
-    ys = [p[1] for p in bbox]
-    return sum(xs) / 4, sum(ys) / 4
-
-
-def _dist(a, b):
-    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-
-
-def extract_elements_cv(pdf_path: str, page_num: int = 0) -> list[dict]:
-    """
-    Extract structural elements using OpenCV + EasyOCR — no API key required.
-    First run downloads ~150 MB OCR models (once only, then works offline).
-    """
-    import cv2
-    import numpy as np
-
-    # 1. Render page at 200 DPI for good OCR resolution
-    png_bytes, _, _ = render_pdf_page(pdf_path, page_num, dpi=200)
-    nparr = np.frombuffer(png_bytes, np.uint8)
-    img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # 2. Invert if dark background (AutoCAD dark theme export)
-    if np.mean(gray) < 128:
-        gray = cv2.bitwise_not(gray)
-
-    # 3. Adaptive threshold + light denoise for cleaner OCR
-    gray = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 15, 8)
-    gray = cv2.medianBlur(gray, 3)
-
-    # 4. OCR
-    reader  = _get_reader()
-    results = reader.readtext(gray, detail=1, paragraph=False,
-                              min_size=10, text_threshold=0.5)
-
-    # 5. Build text list with centres, skip low-confidence
-    texts = []
-    for bbox, text, conf in results:
-        t = text.strip()
-        if conf < 0.3 or not t:
-            continue
-        cx, cy = _bbox_center(bbox)
-        texts.append({'t': t, 'cx': cx, 'cy': cy})
-
-    # 6. Identify element labels
-    labels = [x for x in texts if _LABEL_RE.match(x['t'])]
-
-    # 7. For each label find nearest dimension text (within 400 px at 200 DPI)
-    MAX_PX   = 400
-    seen     = set()
-    elements = []
-
-    for lbl in labels:
-        key = lbl['t'].upper()
-        if key in seen:
-            continue
-        seen.add(key)
-
-        cx, cy = lbl['cx'], lbl['cy']
-        best_dim, best_d = None, MAX_PX
-
-        for t in texts:
-            m = _DIM_RE.search(t['t'])
-            if m:
-                d = _dist((cx, cy), (t['cx'], t['cy']))
-                if d < best_d:
-                    best_d   = d
-                    best_dim = (int(m.group(1)), int(m.group(2)))
-
-        # Fallback: single integer nearby (e.g. wall thickness "300")
-        if best_dim is None:
-            for t in texts:
-                ms = _SINGLE_RE.match(t['t'])
-                if ms:
-                    val = int(ms.group(1))
-                    if 100 <= val <= 15000:
-                        d = _dist((cx, cy), (t['cx'], t['cy']))
-                        if d < best_d:
-                            best_d   = d
-                            best_dim = (val, val)
-
-        if best_dim is None:
-            continue
-
-        l = max(best_dim)
-        w = min(best_dim)
-
-        ku = key
-        if ku.startswith('SW') or ku.startswith('SH'):
-            etype = 'Shear Wall'
-        elif ku.startswith(('W', 'WW')):
-            etype = 'Wall'
-        else:
-            etype = 'Column'
-
-        elements.append({
-            'label':     lbl['t'],
-            'type':      etype,
-            'length_mm': l,
-            'width_mm':  w,
-            'quantity':  1,
-        })
-
-    return elements
-
-
-# ── AI extraction ─────────────────────────────────────────────────────────────
-
-_SYSTEM_PROMPT = (
-    "You are a structural engineering drawing analyst. "
-    "You extract every structural element from construction drawings. "
-    "Always respond with valid JSON only — no markdown, no explanation, no extra text."
+from src.models.element import (
+    ElementType, PanelEntry, ElementBOQ, StructuralElement,
 )
 
-_USER_PROMPT = (
-    "This is a structural/civil engineering drawing. "
-    "Extract EVERY structural element visible — be exhaustive, do not skip any.\n\n"
-    "Step 1 — Look for schedule tables:\n"
-    "  - SCHEDULE OF COLUMNS: read each row (column mark + size e.g. C1: 300x300)\n"
-    "  - SCHEDULE OF WALLS or WALL SCHEDULE: read wall mark + thickness + length\n\n"
-    "Step 2 — Scan the ENTIRE plan view:\n"
-    "  - Find every label: C1, C2, W1, W2, W3, W4, W5, SW1, SW2, WW1, R0 etc.\n"
-    "  - For each label find the nearest dimension annotation\n"
-    "  - Dimension strings: LENGTHxTHICKNESS or THICKNESSxLENGTH or single number\n"
-    "  - Count how many times each label appears in the plan (= quantity)\n\n"
-    "Step 3 — Rules:\n"
-    "  - Wall thickness usually 200-400 mm; wall length usually 1000-15000 mm\n"
-    "  - Column sizes usually 200x200 to 1200x600 mm\n"
-    "  - Ignore: openings (OP1/OP2), pipes, puddle pipes, slabs, footings, beams\n"
-    "  - Each unique label = one entry; do NOT merge different labels\n"
-    "  - length_mm = LONGER dimension; width_mm = SHORTER dimension\n\n"
-    "Return ONLY a valid JSON array:\n"
-    '[\n'
-    '  {"label":"C1","type":"Column","length_mm":300,"width_mm":300,"quantity":4},\n'
-    '  {"label":"W1","type":"Wall","length_mm":11000,"width_mm":300,"quantity":2},\n'
-    '  {"label":"W2","type":"Wall","length_mm":7150,"width_mm":300,"quantity":1}\n'
-    ']\n\n'
-    "Valid types: Column, Wall, Shear Wall\n"
-    "If truly nothing structural is visible return: []"
-)
+# ── Panel label pattern ───────────────────────────────────────────────────────
+_PANEL_RE = re.compile(r'\b((?:OC\d+|IC\d+|\d{2,4})X\d{3,5})\b', re.I)
+
+# ── Section header patterns ───────────────────────────────────────────────────
+_SECTION_PATS: list[tuple[str, re.Pattern]] = [
+    ("BOX CULVERT",  re.compile(r'BOX\s+CU[VL]+ERT\s+PLAN',  re.I)),
+    ("UPPER PIPE",   re.compile(r'UPPER\s+PIPE\s+PLAN',       re.I)),
+    ("BOTTOM PIPE",  re.compile(r'BOTTOM\s+PIPE\s+PLAN',      re.I)),
+    ("BOTTOM PANEL", re.compile(r'BOTTOM\s+PANEL\s+PLAN',     re.I)),
+    ("ACCESSORIES",  re.compile(r'ACCESSORIES\s+PLAN',        re.I)),
+]
+
+_SECTION_TYPE = {
+    "BOX CULVERT":  ElementType.BOX_CULVERT,
+    "UPPER PIPE":   ElementType.BOX_CULVERT,
+    "BOTTOM PIPE":  ElementType.SLAB,
+    "BOTTOM PANEL": ElementType.SLAB,
+    "ACCESSORIES":  ElementType.SLAB,   # recognized but will have no WxH labels → skipped
+}
 
 
-def extract_elements_ai(pdf_path: str, page_num: int = 0,
-                        api_key: str = None) -> list[dict]:
-    """
-    Use Claude Vision to extract structural elements from a PDF drawing page.
-    Returns list of dicts: label, type, length_mm, width_mm, quantity.
-    Raises ValueError if API key missing or API call fails.
-    """
-    key = api_key or get_api_key()
-    if not key:
-        raise ValueError("ANTHROPIC_API_KEY not set. Enter it when prompted.")
+def _extract_spans(page) -> list[dict]:
+    out = []
+    for block in page.get_text("dict")["blocks"]:
+        if block["type"] != 0:
+            continue
+        for line in block["lines"]:
+            for sp in line["spans"]:
+                txt = sp["text"].strip()
+                if txt:
+                    x0, y0, x1, y1 = sp["bbox"]
+                    out.append({"text": txt, "x": (x0 + x1) / 2, "y": (y0 + y1) / 2})
+    return out
 
-    # 150 DPI gives Claude enough resolution to read dimensions clearly
-    png_bytes, _, _ = render_pdf_page(pdf_path, page_num, dpi=150)
-    img_b64 = base64.standard_b64encode(png_bytes).decode("utf-8")
 
-    import anthropic
-    client = anthropic.Anthropic(api_key=key)
+def _parse_label(label: str) -> tuple[float, float, bool, bool]:
+    """Return (width_mm, height_mm, is_corner, is_inner_corner)."""
+    upper = label.upper()
+    is_inner  = upper.startswith("IC")
+    is_corner = upper.startswith("OC") or is_inner
+    parts = upper.split("X")
+    try:
+        h_mm = float(parts[-1])
+    except (ValueError, IndexError):
+        h_mm = 3200.0
+    raw_w = parts[0]
+    if raw_w.startswith("OC"):
+        raw_w = raw_w[2:]
+    elif raw_w.startswith("IC"):
+        raw_w = raw_w[2:]
+    try:
+        w_mm = float(raw_w)
+    except ValueError:
+        w_mm = 80.0 if is_corner else 600.0
+    return w_mm, h_mm, is_corner, is_inner
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",   # sonnet for better accuracy on dense drawings
-        max_tokens=4096,
-        system=_SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": img_b64,
-                    },
-                },
-                {"type": "text", "text": _USER_PROMPT},
-            ],
-        }],
+
+def _large_dims_in_region(spans, x0, y0, x1, y1) -> list[float]:
+    result = []
+    for sp in spans:
+        if x0 <= sp["x"] <= x1 and y0 <= sp["y"] <= y1:
+            try:
+                v = float(sp["text"])
+                if 1000 <= v <= 15000:
+                    result.append(v)
+            except ValueError:
+                pass
+    return sorted(set(result), reverse=True)
+
+
+def _build_boq(section_name, label_counts, dims):
+    length_mm = float(dims[0]) if len(dims) >= 1 else 2000.0
+    width_mm  = float(dims[1]) if len(dims) >= 2 else length_mm
+    heights   = [_parse_label(lbl)[1] for lbl in label_counts]
+    elem_h    = max(heights) if heights else 3200.0
+
+    elem = StructuralElement(
+        element_type=_SECTION_TYPE.get(section_name, ElementType.BOX_CULVERT),
+        label=section_name,
+        length_mm=length_mm,
+        width_mm=width_mm,
+        height_mm=elem_h,
+        quantity=1,
+        notes="Imported from Nova PDF",
     )
 
-    raw = response.content[0].text.strip()
-    raw = re.sub(r"^```[a-z]*\n?", "", raw)
-    raw = re.sub(r"\n?```$", "", raw)
-    raw = raw.strip()
+    def sort_key(item):
+        lbl, _qty = item
+        w, _h, is_corner, _ = _parse_label(lbl)
+        return (0 if is_corner else 1, -w)
 
-    data = json.loads(raw)
-    if not isinstance(data, list):
-        return []
+    panels = []
+    for lbl, qty in sorted(label_counts.items(), key=sort_key):
+        w_mm, h_mm, is_corner, is_inner = _parse_label(lbl)
+        panels.append(PanelEntry(
+            size_label      = lbl.upper(),
+            width_mm        = w_mm,
+            height_mm       = h_mm,
+            quantity        = qty,
+            is_corner       = is_corner,
+            is_inner_corner = is_inner,
+        ))
 
-    result = []
-    for item in data:
-        try:
-            l = int(item.get("length_mm") or 0)
-            w = int(item.get("width_mm")  or 0)
-            if l == 0 and w == 0:
-                continue
-            result.append({
-                "label":     str(item.get("label", "?")).strip(),
-                "type":      str(item.get("type",  "Column")).strip(),
-                "length_mm": max(l, w),
-                "width_mm":  min(l, w) if min(l, w) > 0 else max(l, w),
-                "quantity":  max(1, int(item.get("quantity", 1))),
-            })
-        except (ValueError, TypeError):
+    return elem, ElementBOQ(element=elem, panels=panels)
+
+
+def parse_nova_pdf(
+    pdf_path: str,
+    product_height_mm: float = 3200.0,
+) -> tuple[list, list, str]:
+    """
+    Parse a Nova box-culvert formwork PDF.
+    Returns (elements, boqs, error_str).  error_str is empty on success.
+    """
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as exc:
+        return [], [], f"Cannot open PDF: {exc}"
+
+    if doc.page_count == 0:
+        return [], [], "PDF has no pages."
+
+    page   = doc[0]
+    page_w = page.rect.width
+    page_h = page.rect.height
+    spans  = _extract_spans(page)
+
+    # ── 1. Find section headers ───────────────────────────────────────────────
+    sections: list[dict] = []
+    for sp in spans:
+        for sec_name, pat in _SECTION_PATS:
+            if pat.search(sp["text"]):
+                if not any(s["name"] == sec_name for s in sections):
+                    sections.append({"name": sec_name, "x": sp["x"], "y": sp["y"]})
+                break
+
+    if not sections:
+        return [], [], (
+            "No section headers found in this PDF.\n\n"
+            "Expected text such as 'BOX CULVERT PLAN', 'UPPER PIPE PLAN', "
+            "or 'BOTTOM PIPE PLAN' in the drawing."
+        )
+
+    # ── 2. Compute Y split from header positions ──────────────────────────────
+    # Section labels sit at the BOTTOM of their drawings.
+    # The top row of headers marks the end of the top drawings.
+    # Use: just below the MINIMUM header Y = top of the gap between rows.
+    min_header_y = min(s["y"] for s in sections)
+    y_split = min_header_y + 20  # anything above this line = top drawings
+
+    xs = sorted(s["x"] for s in sections)
+    x_split = (xs[0] + xs[-1]) / 2 if len(xs) >= 2 else page_w / 2
+
+    # ── 3. Assign panel labels to sections ───────────────────────────────────
+    # Rules based on Nova standard layout:
+    #  • y < y_split (above top-row headers)       → BOX CULVERT
+    #  • y ≥ y_split, panel height < 1300 mm       → BOTTOM PIPE (slab panels)
+    #  • y ≥ y_split, panel height ≥ 1300 mm       → UPPER PIPE (wall panels)
+    sec_counts: dict[str, dict] = {s["name"]: defaultdict(int) for s in sections}
+
+    # X boundary for splitting top-half between BOX CULVERT (left) and BOTTOM PANEL (right)
+    # BOX CULVERT header is on the left, BOTTOM PANEL header is on the right.
+    top_sections_by_x = sorted(
+        [s for s in sections if s["y"] < y_split + 50],
+        key=lambda s: s["x"]
+    )
+    # Mid-X between leftmost and rightmost top-row section headers
+    if len(top_sections_by_x) >= 2:
+        x_top_split = (top_sections_by_x[0]["x"] + top_sections_by_x[-1]["x"]) / 2
+    else:
+        x_top_split = page_w / 2
+
+    for sp in spans:
+        for m in _PANEL_RE.finditer(sp["text"]):
+            lbl = m.group(1).upper()
+            lx, ly = sp["x"], sp["y"]
+            h_suffix = lbl.split("X")[-1]
+            try:
+                h_val = int(h_suffix)
+            except ValueError:
+                h_val = 3200
+
+            if ly < y_split:
+                # Top half: split left/right to separate BOX CULVERT from BOTTOM PANEL
+                if lx < x_top_split and "BOX CULVERT" in sec_counts:
+                    target = "BOX CULVERT"
+                elif "BOTTOM PANEL" in sec_counts:
+                    target = "BOTTOM PANEL"
+                else:
+                    target = "BOX CULVERT"
+            else:
+                # Bottom half: short panels → BOTTOM PIPE, tall → UPPER PIPE
+                if h_val < 1300:
+                    target = "BOTTOM PIPE"
+                else:
+                    target = "UPPER PIPE"
+
+            if target in sec_counts:
+                sec_counts[target][lbl] += 1
+
+    # ── 4. Deduplicate legend pairs ───────────────────────────────────────────
+    # Panel legends are printed twice (top + bottom of schedule table).
+    # If ALL counts in a section are even and ≤ 4 → halve them.
+    for sec_name, counts in sec_counts.items():
+        if not counts:
             continue
-    return result
+        vals = list(counts.values())
+        if all(v % 2 == 0 for v in vals) and max(vals) <= 4:
+            for lbl in counts:
+                counts[lbl] //= 2
+
+    # ── 5. Extract element dimensions ────────────────────────────────────────
+    sec_dims = {
+        "BOX CULVERT":  _large_dims_in_region(spans, 0,       0,       x_split, y_split),
+        "UPPER PIPE":   _large_dims_in_region(spans, 0,       y_split, x_split, page_h),
+        "BOTTOM PIPE":  _large_dims_in_region(spans, 0,       y_split, x_split, page_h),
+        "BOTTOM PANEL": _large_dims_in_region(spans, 0,       0,       x_split, y_split),
+    }
+
+    # ── 6. Build output ───────────────────────────────────────────────────────
+    elements: list = []
+    boqs:     list = []
+
+    seen_order = [s["name"] for s in sections]
+    for sec_name in seen_order:
+        counts = dict(sec_counts.get(sec_name, {}))
+        if not counts:
+            continue
+        dims = sec_dims.get(sec_name, [2000.0, 3000.0])
+        elem, boq = _build_boq(sec_name, counts, dims)
+        elements.append(elem)
+        boqs.append(boq)
+
+    if not elements:
+        return [], [], (
+            "Section headers found but no panel labels detected.\n\n"
+            "Ensure the PDF contains panel labels like 'OC80X2400', '600X1235'."
+        )
+
+    return elements, boqs, ""

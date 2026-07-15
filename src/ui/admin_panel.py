@@ -12,7 +12,12 @@ from PyQt6.QtWidgets import (
     QMessageBox, QFrame, QSizePolicy, QFileDialog, QTextEdit
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QFontDatabase
+
+def _ui_font(size: int, bold: bool = False) -> QFont:
+    preferred = ["Segoe UI", ".AppleSystemUIFont", "Helvetica Neue", "Arial"]
+    family = next((f for f in preferred if f in QFontDatabase.families()), "")
+    return QFont(family, size, QFont.Weight.Bold if bold else QFont.Weight.Normal)
 
 from src.auth.auth_manager import (
     get_all_users, add_user, deactivate_user, reactivate_user,
@@ -96,7 +101,7 @@ class AdminPanelDialog(QDialog):
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(20, 0, 20, 0)
         t = QLabel("Admin Panel")
-        t.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        t.setFont(_ui_font(13, bold=True))
         t.setStyleSheet(f"color:{_WHITE}; background:transparent;")
         hl.addWidget(t)
         hl.addStretch()
@@ -241,10 +246,10 @@ class AdminPanelDialog(QDialog):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                 if c == 3:  # Status
                     item.setForeground(QColor(_GREEN if active else _RED))
-                    item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                    item.setFont(_ui_font(9, bold=True))
                 if c == 2 and val == "admin":
                     item.setForeground(QColor(_NOVA_BLUE))
-                    item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                    item.setFont(_ui_font(9, bold=True))
                 self._user_table.setItem(r, c, item)
 
     def _selected_username(self) -> str | None:
@@ -450,7 +455,7 @@ class AdminPanelDialog(QDialog):
                 if c == 3:
                     color = self._ACTION_COLORS.get(str(val), _NOVA_BLUE)
                     item.setForeground(QColor(color))
-                    item.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                    item.setFont(_ui_font(8, bold=True))
                 self._audit_table.setItem(r, c, item)
 
         self._audit_count_lbl.setText(

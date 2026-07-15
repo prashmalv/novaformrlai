@@ -38,8 +38,22 @@ def main():
                f"Host: {socket.gethostname()}")
 
     # ── Main window ───────────────────────────────────────────────────────────
-    window = MainWindow(current_user=user)
-    window.show()
+    try:
+        window = MainWindow(current_user=user)
+        window.show()
+        # On macOS the frameless login dialog leaves the app with no focused window
+        # briefly; raise_() + activateWindow() ensures the main window comes to front.
+        window.raise_()
+        window.activateWindow()
+    except Exception as _exc:
+        import traceback
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, "Startup Error",
+            f"NovoForm failed to start:\n\n{_exc}\n\n"
+            + traceback.format_exc()
+        )
+        sys.exit(1)
 
     exit_code = app.exec()
     log_action(user["username"], user["full_name"], "LOGOUT", "Application closed")

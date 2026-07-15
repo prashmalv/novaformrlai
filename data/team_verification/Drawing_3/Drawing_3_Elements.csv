@@ -1,0 +1,4 @@
+Label,Type,Length_mm,Width_mm,Height_mm,Qty,Floor
+R0,Column,1000,600,3200,14,
+C1,Column,500,300,3200,71,
+SW1,Wall,2470,600,3200,97,
