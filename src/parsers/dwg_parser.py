@@ -1657,3 +1657,650 @@ def parse_nova_drawing(
         )
 
     return elements, boqs, None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nova Shear Wall / Polygon Element Parser
+# Reads SW-labeled elements, computes per-face panels from polygon geometry.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MTEXT_STRIP_RE = re.compile(
+    r'Fromans\|c\d+;'           # AutoCAD colour tag (CLIENT-1.dxf style)
+    r'|\\[A-Za-z][^;]*;'        # standard MTEXT format codes: \f...; \H...; etc.
+    r'|[{}\\]'                  # braces and backslashes
+)
+
+def _clean_mtext_full(txt: str) -> str:
+    """Strip all AutoCAD MTEXT formatting codes and Fromans colour tags."""
+    txt = _MTEXT_STRIP_RE.sub('', txt)
+    txt = txt.replace('|', ' ')
+    return txt.strip()
+
+
+def _classify_polygon_corners(pts: list) -> list:
+    """
+    Classify each polygon vertex as 'OC80' (convex) or 'IC100' (concave).
+
+    Cross-product of consecutive edges determines convex vs concave.  The sign
+    convention depends on whether the polygon is wound CCW (positive signed
+    area) or CW (negative).  We detect the winding direction first and flip
+    the cross-product interpretation for CW polygons so both orientations
+    produce correct OC/IC labels.
+
+    Verified against SW6 (OC×5, IC×1) and SW11 (OC×10, IC×6).
+    """
+    n = len(pts)
+    # Shoelace signed area — positive = CCW, negative = CW
+    signed_area = sum(
+        pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]
+        for i in range(n)
+    )
+    is_ccw = signed_area > 0
+
+    corners = []
+    for i in range(n):
+        prev = pts[(i - 1) % n]
+        curr = pts[i]
+        nxt  = pts[(i + 1) % n]
+        e_in  = (curr[0] - prev[0], curr[1] - prev[1])
+        e_out = (nxt[0]  - curr[0], nxt[1]  - curr[1])
+        cross = e_in[0] * e_out[1] - e_in[1] * e_out[0]
+        if is_ccw:
+            corners.append('IC100' if cross < 0 else 'OC80')
+        else:
+            # CW polygon: cross-product signs are flipped relative to CCW
+            corners.append('OC80' if cross < 0 else 'IC100')
+    return corners
+
+
+def _compute_polygon_face_nets(pts: list, corners: list) -> list:
+    """
+    Net flat-panel coverage length for each face of a polygon.
+
+    Rule (verified against CLIENT-1 QUOTATION.xlsx for SW6, SW11, SW13):
+      * IC100 at a corner deducts 100 mm from each of the two adjacent faces.
+      * OC80 at a corner deducts nothing from the face lengths.
+    """
+    n = len(pts)
+    nets = []
+    for i in range(n):
+        p1 = pts[i]
+        p2 = pts[(i + 1) % n]
+        face_len = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+        deduct = (100 if corners[i] == 'IC100' else 0) + \
+                 (100 if corners[(i + 1) % n] == 'IC100' else 0)
+        nets.append(max(0, round(face_len) - deduct))
+    return nets
+
+
+# Label pattern for structural elements: SW6, C1, W2, etc.
+_SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$')
+
+
+def parse_nova_shear_walls(
+    dxf_path: str,
+    product_height_mm: float = 3705.0,
+    doc=None,
+) -> tuple:
+    """
+    Parse shear walls and other polygon-shaped elements from a Nova DXF drawing.
+
+    For each MTEXT/TEXT label matching 'SW6', 'W3', 'C1', etc.:
+      1. Find the closest closed LWPOLYLINE of structural size.
+      2. Classify polygon corners (OC80 / IC100) using cross-product.
+      3. Compute per-face net lengths (IC deducts 100 mm each side).
+      4. Fill each face with standard panels (DP optimiser).
+
+    Matches each SIGNIFICANT polyline to the nearest label (not vice-versa) to
+    handle drawings where the same label appears many times (repeated floors).
+
+    Returns:
+        elements : list[StructuralElement]
+        boqs     : list[ElementBOQ]
+        error    : str | None
+    """
+    if not EZDXF_OK:
+        return [], [], "ezdxf not installed"
+
+    if doc is None:
+        try:
+            doc = ezdxf.readfile(dxf_path)
+        except Exception as e:
+            return [], [], f"Cannot open DXF: {e}"
+
+    try:
+        msp = doc.modelspace()
+    except Exception as e:
+        return [], [], f"Cannot read modelspace: {e}"
+
+    # ── Collect all MTEXT/TEXT labels ──────────────────────────────────────
+    label_positions: list = []   # (x, y, cleaned_text)
+    for ent in msp:
+        try:
+            if ent.dxftype() == 'TEXT':
+                raw = ent.dxf.text
+                pos = ent.dxf.insert
+            elif ent.dxftype() == 'MTEXT':
+                try:
+                    raw = ent.plain_text()
+                except Exception:
+                    raw = ent.text
+                pos = ent.dxf.insert
+            else:
+                continue
+            cleaned = _clean_mtext_full(raw)
+            if cleaned:
+                label_positions.append((pos.x, pos.y, cleaned))
+        except Exception:
+            continue
+
+    # ── Collect all significant closed polylines ───────────────────────────
+    sig_polys: list = []  # dict with pts, cx, cy, w, h, npts
+    for ent in msp:
+        if ent.dxftype() != 'LWPOLYLINE':
+            continue
+        try:
+            if not ent.is_closed:
+                continue
+            pts = [(p[0], p[1]) for p in ent.get_points()]
+            if len(pts) < 4:
+                continue
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            w = max(xs) - min(xs)
+            h = max(ys) - min(ys)
+            if w < 150 or h < 150:
+                continue  # skip annotation boxes / dimension lines
+            cx = (max(xs) + min(xs)) / 2
+            cy = (max(ys) + min(ys)) / 2
+            sig_polys.append({
+                'pts': pts,
+                'cx': cx, 'cy': cy,
+                'w': w, 'h': h,
+                'npts': len(pts),
+            })
+        except Exception:
+            continue
+
+    if not sig_polys:
+        return [], [], "No structural polylines found (all shapes smaller than 150mm)"
+
+    # ── Polygon-first matching (schedule labels only) ─────────────────────
+    # Each polygon scans labels and picks the nearest one.
+    # Restricting to schedule-only labels prevents stray labels (e.g. SW14)
+    # from stealing polygons that belong to schedule elements.
+    LABEL_SEARCH_R = 8000   # mm — max label-to-centroid distance
+
+    # Build schedule label set to filter out stray labels like SW14
+    _sched_labels: set = set()
+    if doc is not None:
+        try:
+            _sched_tbl = parse_nova_schedule_table(doc)
+            _sched_labels = set(_sched_tbl.keys())
+        except Exception:
+            pass
+
+    poly_label: dict = {}   # index in sig_polys → label string
+    poly_dist:  dict = {}   # index → matched distance (for rescue-pass tie-break)
+
+    for pi, poly in enumerate(sig_polys):
+        best_label, best_dist = None, LABEL_SEARCH_R
+        for lx, ly, ltxt in label_positions:
+            if not _SW_LABEL_RE.match(ltxt):
+                continue
+            lbl_up = ltxt.upper()
+            # Skip labels not in schedule if schedule info is available
+            if _sched_labels and lbl_up not in _sched_labels:
+                continue
+            d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
+            if d < best_dist:
+                best_dist = d
+                best_label = lbl_up
+        if best_label:
+            poly_label[pi] = best_label
+            poly_dist[pi]  = best_dist
+
+    # ── Rescue pass for unmatched AS_PER_PLAN labels ──────────────────────
+    # After polygon-first, some AS_PER_PLAN elements may have no polygon
+    # because a stray label of ANOTHER schedule element claimed their polygon.
+    # Strategy: for each unmatched AS_PER_PLAN label, find the nearest polygon
+    # that is either unclaimed OR claimed by a label that has multiple polygons
+    # (suggesting it captured an extra polygon that belongs here).
+    matched_labels = set(poly_label.values())
+    ap_plan_labels = {
+        lbl for lbl, dim in (_sched_labels and
+                              (parse_nova_schedule_table(doc) if doc else {}) or {}).items()
+        if dim == 'AS_PER_PLAN' and lbl not in matched_labels
+    } if _sched_labels else set()
+
+    if ap_plan_labels and doc is not None:
+        # Count how many polygons each label currently has
+        from collections import Counter as _Ctr
+        label_poly_count = _Ctr(poly_label.values())
+        # Polygons claimed by a label that has >1 polygon are candidates for re-assignment
+        multi_claimed = {pi for pi, lbl in poly_label.items() if label_poly_count[lbl] > 1}
+        unclaimed = {pi for pi in range(len(sig_polys)) if pi not in poly_label}
+        rescue_candidates = unclaimed | multi_claimed
+
+        for lbl in ap_plan_labels:
+            best_pi, best_dist = None, LABEL_SEARCH_R * 2
+            for lx, ly, ltxt in label_positions:
+                if ltxt.upper() != lbl:
+                    continue
+                for pi in rescue_candidates:
+                    poly = sig_polys[pi]
+                    d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
+                    if d < best_dist:
+                        best_dist = d
+                        best_pi = pi
+            if best_pi is not None:
+                # Only rescue if this polygon's shape (W×H) doesn't already exist
+                # among ANY other polygon in poly_label — prevents assigning a stray
+                # copy of an existing shape (e.g. SW8's duplicate) to a new label.
+                cand = sig_polys[best_pi]
+                shape_taken = False
+                for other_pi, other_lbl in poly_label.items():
+                    if other_pi == best_pi:
+                        continue
+                    if other_lbl == lbl:
+                        continue  # same target label is fine
+                    op = sig_polys[other_pi]
+                    w_ratio = max(op['w'], cand['w']) / max(min(op['w'], cand['w']), 1)
+                    h_ratio = max(op['h'], cand['h']) / max(min(op['h'], cand['h']), 1)
+                    if w_ratio < 1.05 and h_ratio < 1.05:
+                        shape_taken = True
+                        break
+                if shape_taken:
+                    # Candidate is a geometric duplicate of another element's polygon.
+                    # Skip — this label's actual polygon is either missing from the DXF
+                    # or uses a different entity type. Flag as polygon-not-found.
+                    continue
+                # Re-assign this polygon to the rescued label
+                poly_label[best_pi] = lbl
+                poly_dist[best_pi]  = best_dist
+                rescue_candidates.discard(best_pi)
+
+    if not poly_label:
+        return [], [], (
+            "No structural element labels found near polygon shapes.\n"
+            "Expected labels like SW6, SW11, C1, W3 within "
+            f"{LABEL_SEARCH_R / 1000:.0f} m of a polyline centroid."
+        )
+
+    # ── Group polylines by label and build BOQ ─────────────────────────────
+    from collections import defaultdict as _dd
+    label_polys: dict = _dd(list)
+    for pi, label in poly_label.items():
+        label_polys[label].append(sig_polys[pi])
+
+    elements: list = []
+    boqs:     list = []
+
+    from src.engine.panel_optimizer import optimize_polygon_element
+
+    for label, group in sorted(label_polys.items()):
+        # Pick the most structurally significant polyline as representative:
+        # prefer highest vertex count (L/T-shapes beat rectangles), then largest
+        # bounding-box area.  Remaining group members contribute to quantity.
+        rep = max(group, key=lambda p: (p['npts'], p['w'] * p['h']))
+        qty = len(group)
+
+        pts     = rep['pts']
+        corners = _classify_polygon_corners(pts)
+        f_nets  = _compute_polygon_face_nets(pts, corners)
+        oc_cnt  = corners.count('OC80')
+        ic_cnt  = corners.count('IC100')
+
+        # Classify element type from bounding box
+        long_mm  = max(rep['w'], rep['h'])
+        short_mm = min(rep['w'], rep['h'])
+        if long_mm / max(short_mm, 1) <= 4.0 and short_mm <= 1500:
+            elem_type = ElementType.COLUMN
+        else:
+            elem_type = ElementType.SHEAR_WALL
+
+        elem = StructuralElement(
+            element_type=elem_type,
+            label=label,
+            length_mm=round(long_mm),
+            width_mm=round(short_mm),
+            height_mm=product_height_mm,
+            quantity=qty,
+            notes=f"Polygon: {len(pts)} vertices, OC×{oc_cnt}, IC×{ic_cnt}",
+            polygon_pts=list(pts),
+        )
+
+        boq = optimize_polygon_element(
+            element=elem,
+            face_nets=f_nets,
+            oc_count=oc_cnt,
+            ic_count=ic_cnt,
+            product_height_mm=product_height_mm,
+        )
+
+        elements.append(elem)
+        boqs.append(boq)
+
+    if not elements:
+        return [], [], "Labels matched but no BOQ could be computed"
+
+    return elements, boqs, None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nova Schedule Table Parser  (COLUMN SCHEDULE / SHEAR WALL SCHEDULE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCHED_COL_TOL = 1800  # mm — X tolerance for table-column matching
+
+
+def _parse_dim_value(txt: str):
+    """
+    Parse one schedule-table cell.
+    Returns: (length_mm, width_mm) | 'AS_PER_PLAN' | None (blank/dash/skip)
+    """
+    s = txt.strip().upper()
+    if not s or set(s) <= {'-', ' ', '_'}:
+        return None
+    if any(kw in s for kw in ('AS PER PLAN', 'AS PER MAP', 'AS PER LAYOUT',
+                               'AS PER SITE', 'AS PER DRAW', 'MAP')):
+        return 'AS_PER_PLAN'
+    m = re.match(r'(\d+)\s*[xX×]\s*(\d+)', s)
+    if m:
+        d1, d2 = int(m.group(1)), int(m.group(2))
+        return (max(d1, d2), min(d1, d2))
+    return None
+
+
+def _expand_label(label: str) -> list:
+    """
+    Expand compound schedule labels.
+    "C7,C8"       → ["C7", "C8"]
+    "SW5 TO SW11" → ["SW5","SW6","SW7","SW8","SW9","SW10","SW11"]
+    """
+    label = label.strip().upper().replace('%%U', '')
+    rm = re.match(r'^([A-Z]+)(\d+)\s+TO\s+[A-Z]*(\d+)([A-Z]?)$', label)
+    if rm:
+        prefix = rm.group(1)
+        start, end = int(rm.group(2)), int(rm.group(3))
+        return [f"{prefix}{i}" for i in range(start, end + 1)]
+    if ',' in label:
+        parts = [p.strip() for p in label.split(',')]
+        result, last_pfx = [], ''
+        for p in parts:
+            m2 = re.match(r'^([A-Z]*)(\d+[A-Z]?)$', p)
+            if m2:
+                if m2.group(1):
+                    last_pfx = m2.group(1)
+                result.append(f"{last_pfx}{m2.group(2)}")
+            else:
+                result.append(p)
+        return result
+    return [label]
+
+
+def _cluster_rows(ys: list, tol: float = 280) -> list:
+    """Group nearby Y values into clusters; return sorted (desc) centroid per cluster."""
+    if not ys:
+        return []
+    sorted_ys = sorted(ys, reverse=True)
+    clusters = [[sorted_ys[0]]]
+    for y in sorted_ys[1:]:
+        if abs(clusters[-1][-1] - y) <= tol:
+            clusters[-1].append(y)
+        else:
+            clusters.append([y])
+    return [sum(c) / len(c) for c in clusters]
+
+
+def parse_nova_schedule_table(doc) -> dict:
+    """
+    Parse COLUMN SCHEDULE and SHEAR WALL SCHEDULE tables from a Nova DXF.
+
+    Returns: {LABEL_UPPER: (length_mm, width_mm) | 'AS_PER_PLAN'}
+    Only Foundation-floor dimensions are extracted.
+    Elements absent from the foundation column ("-----") are omitted.
+    """
+    if not EZDXF_OK or doc is None:
+        return {}
+    try:
+        msp = doc.modelspace()
+    except Exception:
+        return {}
+
+    # ── Collect all text entities ──────────────────────────────────────────
+    raw_texts: list = []
+    for ent in msp:
+        try:
+            if ent.dxftype() == 'TEXT':
+                raw, pos = ent.dxf.text, ent.dxf.insert
+            elif ent.dxftype() == 'MTEXT':
+                try:
+                    raw = ent.plain_text()
+                except Exception:
+                    raw = ent.text
+                pos = ent.dxf.insert
+            else:
+                continue
+            cleaned = _clean_mtext_full(raw)
+            if cleaned:
+                raw_texts.append((pos.x, pos.y, cleaned))
+        except Exception:
+            continue
+
+    if not raw_texts:
+        return {}
+
+    result: dict = {}
+
+    # ── Process each schedule section ─────────────────────────────────────
+    for section_kw in ('COLUMN SCHEDULE', 'SHEAR WALL SCHEDULE'):
+        hdr_matches = [(x, y, t) for x, y, t in raw_texts
+                       if section_kw in t.upper()]
+        if not hdr_matches:
+            continue
+        # Topmost occurrence (highest Y)
+        sec_x, sec_y, _ = max(hdr_matches, key=lambda r: r[1])
+
+        # Texts belonging to this section: within 15000mm to the right,
+        # and up to 20000mm below the section header.
+        sec_texts = [(x, y, t) for x, y, t in raw_texts
+                     if sec_x - 500 <= x <= sec_x + 15000
+                     and sec_y - 20000 <= y < sec_y]
+
+        if not sec_texts:
+            continue
+
+        # ── Find FDN column X from header rows ────────────────────────────
+        hdr_zone = [(x, y, t) for x, y, t in sec_texts if y >= sec_y - 2200]
+        fdn_x = None
+        for x, y, t in hdr_zone:
+            tu = t.upper()
+            if 'FDN' in tu or 'FOUNDATION' in tu:
+                fdn_x = x
+                break
+        if fdn_x is None:
+            continue
+
+        # ── Data rows: below header zone ──────────────────────────────────
+        data_texts = [(x, y, t) for x, y, t in sec_texts if y < sec_y - 1500]
+        if not data_texts:
+            continue
+
+        label_x = min(x for x, y, t in data_texts)
+        row_centroids = _cluster_rows([y for x, y, t in data_texts])
+
+        for cy in row_centroids:
+            row = [(x, t) for x, y, t in data_texts if abs(y - cy) < 290]
+            if not row:
+                continue
+
+            # Label: text nearest to label_x
+            lbl_cands = [(x, t) for x, t in row if abs(x - label_x) < _SCHED_COL_TOL]
+            if not lbl_cands:
+                continue
+            label_raw = min(lbl_cands, key=lambda r: abs(r[0] - label_x))[1]
+            label_raw = label_raw.replace('%%U', '').strip()
+
+            # FDN value: text nearest to fdn_x
+            fdn_cands = [(x, t) for x, t in row if abs(x - fdn_x) < _SCHED_COL_TOL]
+            if not fdn_cands:
+                continue
+            fdn_raw = min(fdn_cands, key=lambda r: abs(r[0] - fdn_x))[1]
+
+            value = _parse_dim_value(fdn_raw)
+            if value is None:
+                continue  # "-----" → element doesn't exist at foundation
+
+            for lbl in _expand_label(label_raw):
+                lbl_up = lbl.upper().strip()
+                if lbl_up and re.match(r'^[A-Z]+\d', lbl_up):
+                    result[lbl_up] = value
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unified Nova Parser  (schedule table + polygon geometry)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def parse_nova_full(
+    dxf_path: str,
+    product_height_mm: float = 3705.0,
+    casting_height_mm: float = 3705.0,
+    doc=None,
+) -> tuple:
+    """
+    Primary Nova DXF parser.  Combines two sources:
+
+    1. COLUMN / SHEAR WALL SCHEDULE table  → authoritative dimensions
+    2. Closed LWPOLYLINE geometry           → instance count (qty) &
+                                              geometry for AS_PER_PLAN elements
+
+    Priority rules:
+    * Explicit schedule dimension (e.g. "600x900") → use it; compute BOQ with
+      compute_boq() treating the element as a simple rectangle.
+    * "AS PER PLAN" in schedule (or label absent from schedule) → use polygon
+      geometry BOQ from optimize_polygon_element().
+    * Elements in schedule but not found in drawing → add with qty=1 so the
+      user can review and adjust.
+
+    Returns: (elements, boqs, error_or_None)
+    """
+    if not EZDXF_OK:
+        return [], [], "ezdxf not installed"
+
+    if doc is None:
+        try:
+            doc = ezdxf.readfile(dxf_path)
+        except Exception as e:
+            return [], [], f"Cannot open DXF: {e}"
+
+    # ── Step 1: schedule table ─────────────────────────────────────────────
+    schedule = parse_nova_schedule_table(doc)
+
+    # ── Step 2: polygon geometry (qty counts + AS_PER_PLAN shapes) ─────────
+    poly_elements, poly_boqs, _ = parse_nova_shear_walls(
+        dxf_path, product_height_mm=product_height_mm, doc=doc)
+
+    poly_lookup: dict = {e.label: (e, b)
+                         for e, b in zip(poly_elements, poly_boqs)}
+
+    # ── Step 3: merge ──────────────────────────────────────────────────────
+    from src.engine.panel_optimizer import compute_boq as _compute_boq
+
+    _COLUMN_PREFIX = re.compile(r'^C\d', re.I)
+
+    elements: list = []
+    boqs:     list = []
+    seen:     set  = set()
+
+    def _elem_type(label: str) -> 'ElementType':
+        return ElementType.COLUMN if _COLUMN_PREFIX.match(label) else ElementType.SHEAR_WALL
+
+    # Process elements that the polygon parser found in the drawing
+    for label_up, (poly_elem, poly_boq) in sorted(poly_lookup.items()):
+        seen.add(label_up)
+        sched_val = schedule.get(label_up)
+
+        if sched_val is not None and sched_val != 'AS_PER_PLAN':
+            # Authoritative schedule dimension → override polygon geometry
+            length_mm, width_mm = sched_val
+            elem = StructuralElement(
+                element_type=_elem_type(label_up),
+                label=label_up,
+                length_mm=length_mm,
+                width_mm=width_mm,
+                height_mm=casting_height_mm,
+                quantity=poly_elem.quantity,
+                notes=f"Schedule: {length_mm}×{width_mm}mm",
+                polygon_pts=poly_elem.polygon_pts,  # keep shape for floor-plan diagram
+            )
+            try:
+                boq = _compute_boq(elem, panel_height_mm=product_height_mm)
+            except Exception:
+                boq = poly_boq  # fallback if optimizer can't handle this type
+        else:
+            # AS_PER_PLAN or not in schedule → polygon geometry is authoritative
+            elem = poly_elem
+            boq  = poly_boq
+
+        elements.append(elem)
+        boqs.append(boq)
+
+    # Elements in schedule but NOT found in drawing geometry → add with qty=1
+    for label_up, sched_val in sorted(schedule.items()):
+        if label_up in seen:
+            continue
+        if sched_val is None or sched_val == 'AS_PER_PLAN':
+            # AS_PER_PLAN with no matching polygon → include as placeholder with warning
+            elem = StructuralElement(
+                element_type=_elem_type(label_up),
+                label=label_up,
+                length_mm=0,
+                width_mm=0,
+                height_mm=casting_height_mm,
+                quantity=1,
+                notes=f"AS_PER_PLAN — polygon shape not found in DXF",
+            )
+            from src.models.element import ElementBOQ as _BOQ
+            boq = _BOQ(
+                element=elem,
+                panels=[],
+                spacer_mm=0.0,
+                height_note="",
+                price_per_set=0.0,
+                num_sets=1,
+                grand_total=0.0,
+                warnings=[
+                    f"{label_up}: Shape polygon not found in DXF. "
+                    "Enter dimensions manually to generate BOQ."
+                ],
+            )
+            elements.append(elem)
+            boqs.append(boq)
+            continue
+        length_mm, width_mm = sched_val
+        elem = StructuralElement(
+            element_type=_elem_type(label_up),
+            label=label_up,
+            length_mm=length_mm,
+            width_mm=width_mm,
+            height_mm=casting_height_mm,
+            quantity=1,
+            notes=f"Schedule: {length_mm}×{width_mm}mm (verify qty from drawing)",
+        )
+        try:
+            boq = _compute_boq(elem, panel_height_mm=product_height_mm)
+            elements.append(elem)
+            boqs.append(boq)
+        except Exception:
+            pass
+
+    if not elements:
+        return [], [], (
+            "No elements found.  The drawing may not have a COLUMN / SHEAR WALL"
+            " SCHEDULE table, and no labelled structural polylines were detected."
+        )
+
+    return elements, boqs, None

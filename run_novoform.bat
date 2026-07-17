@@ -2,7 +2,7 @@
 REM ============================================================
 REM  NovoForm — Application Launcher
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.18
+REM  Version: 1.20
 REM
 REM  Double-click this file to start NovoForm.
 REM  Run install_windows_nova_updatedbranding.bat first
@@ -16,7 +16,7 @@ set APP_DIR=%~dp0
 if "%APP_DIR:~-1%"=="\" set APP_DIR=%APP_DIR:~0,-1%
 cd /d "%APP_DIR%"
 
-title NovoForm v1.19 — Nova Formworks
+title NovoForm v1.20 — Nova Formworks
 
 REM ── Check venv is present ────────────────────────────────
 if not exist "%APP_DIR%\venv\Scripts\pythonw.exe" (

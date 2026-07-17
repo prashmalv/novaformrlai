@@ -2,10 +2,21 @@
 REM ============================================================
 REM  NovoForm — Windows Installation Script
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.19 — PDF import for Nova box-culvert drawings (July 2026)
+REM  Version: 1.20 — Floor-plan diagrams, shape images, dual DXF import (July 2026)
 REM  Developed by RLAI (rightleft.ai)
 REM
-REM  What's new in v1.19:
+REM  What's new in v1.20:
+REM    - Floor-Plan Diagrams: last column of BOQ PDF and Excel now shows a
+REM      shape diagram for every element with overall dimensions + panel summary.
+REM    - Pre-defined Shape Images: SW5/6/7/8/10/11/12/14 show actual Nova
+REM      formwork drawings; other shear walls show auto-detected L/T/E shape.
+REM    - Dual DXF Import: two separate browse sections —
+REM      "Client Drawing (DXF)" and "Nova Formwork Drawing (DXF)" — no more
+REM      confusion about which file to upload where.
+REM    - Labels cleaned: "DWG/DXF" changed to "DXF" throughout the UI.
+REM    - No-gap panel preference: optimizer tries gap=0 first (more accurate).
+REM
+REM  What was new in v1.19:
 REM    - PDF Import: Nova box-culvert PDFs now import elements + panel BOQ
 REM      automatically (BOX CULVERT / UPPER PIPE / BOTTOM PIPE / BOTTOM PANEL).
 REM    - "Import Elements" button replaces "Open & Review" in PDF section.
@@ -45,7 +56,7 @@ set APP_DIR=%~dp0
 if "%APP_DIR:~-1%"=="\" set APP_DIR=%APP_DIR:~0,-1%
 cd /d "%APP_DIR%"
 
-title NovoForm v1.19 Installer — Nova Formworks
+title NovoForm v1.20 Installer — Nova Formworks
 
 REM ── Check: must be run as Administrator ──────────────────
 net session >nul 2>&1
@@ -68,17 +79,18 @@ if errorlevel 1 (
 echo.
 echo  ====================================================
 echo   NovoForm — Formwork Analysis and BOQ Generator
-echo   Version 1.18  ^|  Nova Formworks Pvt. Ltd.
-echo   Nova Drawing v2 Parser  ^|  June 2026
+echo   Version 1.20  ^|  Nova Formworks Pvt. Ltd.
+echo   Nova Drawing v2 Parser  ^|  July 2026
 echo   Developed by RLAI (rightleft.ai)
 echo  ====================================================
 echo.
-echo   What's new in v1.19:
-echo     - PDF Import: Nova box-culvert PDFs now extract
-echo       elements and panel BOQ automatically
-echo       (BOX CULVERT / UPPER PIPE / BOTTOM PIPE plans)
+echo   What's new in v1.20:
+echo     - Floor-Plan Diagrams in BOQ PDF and Excel
+echo       (shape image + dimensions + panel summary)
+echo     - Pre-defined SW shape images (SW5-SW14)
+echo     - Dual DXF Import: Client + Nova Drawing sections
+echo     - v1.19: PDF Import for Nova box-culvert drawings
 echo     - v1.18: Edit/Delete panels in BOQ Results tab
-echo     - v1.15: AV scan fix; v1.14: Edit Panels in BOQ
 echo.
 echo   Default login: admin / nova@123
 echo   (Change password immediately after first login)
@@ -204,7 +216,7 @@ if not exist "%APP_DIR%\config\api_config.json" (
 REM ── Done ─────────────────────────────────────────────────
 echo.
 echo  ====================================================
-echo   Installation Complete!  ^|  NovoForm v1.19
+echo   Installation Complete!  ^|  NovoForm v1.20
 echo.
 echo   To launch NovoForm:
 echo     Option 1 : Double-click "NovoForm" on your Desktop

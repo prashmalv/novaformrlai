@@ -28,7 +28,7 @@ from src.output.excel_generator import generate_excel_boq
 from src.parsers.dwg_parser import (
     parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf,
     parse_dxf_full, parse_dwg_full, detect_panel_height,
-    parse_nova_drawing,
+    parse_nova_drawing, parse_nova_shear_walls, parse_nova_full,
 )
 # pdf_parser legacy functions loaded lazily inside PDFImportDialog to avoid
 # import errors when the module does not expose the old visual-preview API.
@@ -426,7 +426,7 @@ class DWGReviewDialog(QDialog):
     User can: confirm, edit dimensions, delete false detections, change type.
     NEW: "Add Missing Element" button for elements not detected in drawing.
     """
-    def __init__(self, elements: list, parent=None, casting_height_mm: float = 3200.0):
+    def __init__(self, elements: list, parent=None, casting_height_mm: float = 3705.0):
         super().__init__(parent)
         self.setWindowTitle("Review Detected Elements from Drawing")
         self.resize(860, 520)
@@ -1391,17 +1391,18 @@ class _DXFWorker(QThread):
                     })
                     return
 
-                # Try Nova parser first — pass pre-loaded doc, no second file read
-                elements, boqs, error = parse_nova_drawing(
+                # Unified Nova parser: reads schedule table + polygon geometry.
+                # Handles columns (C1, C2…) and shear walls (SW6, SW11…) in one pass.
+                all_elements, all_boqs, nova_err = parse_nova_full(
                     self._path,
-                    casting_height_mm=self._casting_h,
                     product_height_mm=self._product_h,
+                    casting_height_mm=self._casting_h,
                     doc=_doc,
                 )
-                if elements:
+                if all_elements:
                     self.finished.emit({
                         'mode': 'nova',
-                        'elements': elements, 'boqs': boqs, 'error': error,
+                        'elements': all_elements, 'boqs': all_boqs, 'error': nova_err,
                     })
                     return
                 # No Nova labels found — use standard geometric parser, same doc
@@ -1598,7 +1599,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.19")
+        version = QLabel("v1.20")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -1733,37 +1734,80 @@ class MainWindow(QMainWindow):
         self.elem_table.setStyleSheet(TABLE_STYLE)
         lay.addWidget(self.elem_table)
 
-        # DWG/DXF Import
-        grp_dwg = QGroupBox("Import from Drawing File (DWG / DXF)")
-        grp_dwg.setStyleSheet(GROUP_STYLE)
-        dwg_lay = QVBoxLayout(grp_dwg)
+        # ── Section 1: Client Drawing (DXF) ──────────────────────────────────────
+        grp_client_dxf = QGroupBox("Import Client Drawing (DXF)")
+        grp_client_dxf.setStyleSheet(GROUP_STYLE)
+        client_lay = QVBoxLayout(grp_client_dxf)
 
-        dwg_row = QHBoxLayout()
-        self.dwg_path_edit = QLineEdit()
-        self.dwg_path_edit.setReadOnly(True)
-        self.dwg_path_edit.setPlaceholderText("No file selected — click Browse to load DWG or DXF")
-        dwg_row.addWidget(self.dwg_path_edit)
+        client_row = QHBoxLayout()
+        self.client_dxf_path_edit = QLineEdit()
+        self.client_dxf_path_edit.setReadOnly(True)
+        self.client_dxf_path_edit.setPlaceholderText(
+            "No file selected — click Browse to load client's structural drawing (.dxf)")
+        client_row.addWidget(self.client_dxf_path_edit)
 
-        btn_browse = QPushButton("Browse…")
-        btn_browse.setStyleSheet(BTN_SECONDARY)
-        btn_browse.setFixedWidth(90)
-        btn_browse.clicked.connect(self._browse_dwg)
-        dwg_row.addWidget(btn_browse)
+        btn_client_browse = QPushButton("Browse…")
+        btn_client_browse.setStyleSheet(BTN_SECONDARY)
+        btn_client_browse.setFixedWidth(90)
+        btn_client_browse.clicked.connect(self._browse_client_dxf)
+        client_row.addWidget(btn_client_browse)
 
-        btn_import = QPushButton("Import Elements")
-        btn_import.setStyleSheet(BTN_STYLE)
-        btn_import.setFixedWidth(130)
-        btn_import.clicked.connect(self._import_dwg)
-        dwg_row.addWidget(btn_import)
-        dwg_lay.addLayout(dwg_row)
+        btn_client_import = QPushButton("Import Elements")
+        btn_client_import.setStyleSheet(BTN_STYLE)
+        btn_client_import.setFixedWidth(130)
+        btn_client_import.clicked.connect(self._import_client_dxf)
+        client_row.addWidget(btn_client_import)
+        client_lay.addLayout(client_row)
 
-        # Status row
+        client_note = QLabel(
+            "ℹ  Client's structural floor plan — system auto-detects columns and shear "
+            "walls, then calculates panel quantities.")
+        client_note.setWordWrap(True)
+        client_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
+        client_lay.addWidget(client_note)
+
+        lay.addWidget(grp_client_dxf)
+
+        # Keep dwg_path_edit as alias so legacy internal code still works
+        self.dwg_path_edit = self.client_dxf_path_edit
+
+        # ── Section 2: Nova Formwork Drawing (DXF) ───────────────────────────────
+        grp_nova_dxf = QGroupBox("Import Nova Formwork Drawing (DXF)")
+        grp_nova_dxf.setStyleSheet(GROUP_STYLE)
+        nova_dxf_lay = QVBoxLayout(grp_nova_dxf)
+
+        nova_dxf_row = QHBoxLayout()
+        self.nova_dxf_path_edit = QLineEdit()
+        self.nova_dxf_path_edit.setReadOnly(True)
+        self.nova_dxf_path_edit.setPlaceholderText(
+            "No file selected — click Browse to load Nova formwork drawing (.dxf)")
+        nova_dxf_row.addWidget(self.nova_dxf_path_edit)
+
+        btn_nova_browse = QPushButton("Browse…")
+        btn_nova_browse.setStyleSheet(BTN_SECONDARY)
+        btn_nova_browse.setFixedWidth(90)
+        btn_nova_browse.clicked.connect(self._browse_nova_dxf)
+        nova_dxf_row.addWidget(btn_nova_browse)
+
+        btn_nova_import = QPushButton("Import Elements")
+        btn_nova_import.setStyleSheet(BTN_STYLE)
+        btn_nova_import.setFixedWidth(130)
+        btn_nova_import.clicked.connect(self._import_nova_dxf)
+        nova_dxf_row.addWidget(btn_nova_import)
+        nova_dxf_lay.addLayout(nova_dxf_row)
+
+        nova_dxf_note = QLabel(
+            "ℹ  Nova's own formwork drawings (col.dxf / new block.dxf style) — "
+            "panel dimensions are read directly from the drawing annotations.")
+        nova_dxf_note.setWordWrap(True)
+        nova_dxf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
+        nova_dxf_lay.addWidget(nova_dxf_note)
+
+        lay.addWidget(grp_nova_dxf)
+
+        # Hidden status label kept for internal DWG-tool detection (not shown in UI)
         self.dwg_status_label = QLabel("")
-        self.dwg_status_label.setStyleSheet("font-size: 10px; color: #555;")
-        dwg_lay.addWidget(self.dwg_status_label)
         self._update_dwg_status()
-
-        lay.addWidget(grp_dwg)
 
         # PDF Import
         grp_pdf = QGroupBox("Import from PDF Drawing")
@@ -1926,7 +1970,7 @@ class MainWindow(QMainWindow):
 
         self.panel_height_combo = QComboBox()
         self.panel_height_combo.addItems(_PANEL_HEIGHT_OPTIONS)
-        self.panel_height_combo.setCurrentText("3200")
+        self.panel_height_combo.setCurrentText("3705")
         self.panel_height_combo.setMinimumWidth(160)
         self.panel_height_combo.currentIndexChanged.connect(
             self._regenerate_boq_if_elements_present)
@@ -1934,7 +1978,7 @@ class MainWindow(QMainWindow):
 
         self.casting_height_combo = QComboBox()
         self.casting_height_combo.addItems(_CASTING_HEIGHT_OPTIONS)
-        self.casting_height_combo.setCurrentText("3200")
+        self.casting_height_combo.setCurrentText("3705")
         self.casting_height_combo.setEditable(True)
         self.casting_height_combo.setMinimumWidth(160)
         _cast_lbl = QLabel("Casting Height (mm):")
@@ -2021,7 +2065,7 @@ class MainWindow(QMainWindow):
         settings_row.addWidget(QLabel("Panel Height (mm):"))
         self.boq_ph_combo = QComboBox()
         self.boq_ph_combo.addItems(_PANEL_HEIGHT_OPTIONS)
-        self.boq_ph_combo.setCurrentText("3200")
+        self.boq_ph_combo.setCurrentText("3705")
         self.boq_ph_combo.setMinimumWidth(90)
         self.boq_ph_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -2032,7 +2076,7 @@ class MainWindow(QMainWindow):
         settings_row.addWidget(QLabel("Casting Height (mm):"))
         self.boq_ch_combo = QComboBox()
         self.boq_ch_combo.addItems(_CASTING_HEIGHT_OPTIONS)
-        self.boq_ch_combo.setCurrentText("3200")
+        self.boq_ch_combo.setCurrentText("3705")
         self.boq_ch_combo.setEditable(True)
         self.boq_ch_combo.setMinimumWidth(90)
         self.boq_ch_combo.setSizePolicy(
@@ -2553,12 +2597,24 @@ class MainWindow(QMainWindow):
         self.dwg_status_label.setText("Conversion tools: " + "  |  ".join(parts))
 
     def _browse_dwg(self):
+        """Legacy alias — opens client DXF browser."""
+        self._browse_client_dxf()
+
+    def _browse_client_dxf(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Drawing File", "",
-            "Drawing Files (*.dwg *.dxf);;DWG Files (*.dwg);;DXF Files (*.dxf)"
+            self, "Open Client Drawing", "",
+            "DXF Files (*.dxf);;All Files (*)"
         )
         if path:
-            self.dwg_path_edit.setText(path)
+            self.client_dxf_path_edit.setText(path)
+
+    def _browse_nova_dxf(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Nova Formwork Drawing", "",
+            "DXF Files (*.dxf);;All Files (*)"
+        )
+        if path:
+            self.nova_dxf_path_edit.setText(path)
 
     def _browse_pdf(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -2689,10 +2745,29 @@ class MainWindow(QMainWindow):
         self._pdf_worker.finished.connect(_on_pdf_done)
         self._pdf_worker.start()
 
-    def _import_dwg(self):
-        path = self.dwg_path_edit.text().strip()
+    def _import_client_dxf(self):
+        """Import from the Client Drawing section."""
+        path = self.client_dxf_path_edit.text().strip()
         if not path:
-            QMessageBox.warning(self, "No File", "Please select a DWG or DXF file first.")
+            QMessageBox.warning(self, "No File",
+                                "Please select a client DXF file first.")
+            return
+        self._import_dwg(path)
+
+    def _import_nova_dxf(self):
+        """Import from the Nova Formwork Drawing section."""
+        path = self.nova_dxf_path_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, "No File",
+                                "Please select a Nova formwork DXF file first.")
+            return
+        self._import_dwg(path)
+
+    def _import_dwg(self, path: str = None):
+        if path is None:
+            path = self.dwg_path_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, "No File", "Please select a DXF file first.")
             return
 
         panel_h    = float(self.panel_height_combo.currentText())
@@ -2783,11 +2858,11 @@ class MainWindow(QMainWindow):
             try:
                 cur_ph = int(self.panel_height_combo.currentText())
             except ValueError:
-                cur_ph = 3200
+                cur_ph = 3705
             try:
                 cur_ch = int(self.casting_height_combo.currentText())
             except (ValueError, AttributeError):
-                cur_ch = 3200
+                cur_ch = 3705
 
             settings_dlg = ImportSettingsDialog(
                 element_count    = len(detected),
@@ -2933,6 +3008,7 @@ class MainWindow(QMainWindow):
                 client_name=self.client_name_edit.text().strip(),
                 panel_height_mm=panel_h,
                 element_boqs=list(self._boqs),
+                source_dxf_path=getattr(self, '_current_dxf_path', ''),
             )
 
             # Set Drawing Preview and 3D View pending args (consumed on tab click)
@@ -3044,6 +3120,7 @@ class MainWindow(QMainWindow):
             gst_enabled=self.gst_check.isChecked(),
             freight_amount=self.freight_spin.value(),
             panel_rate_per_sqm=self.rate_panel.value(),
+            source_dxf_path=getattr(self, '_current_dxf_path', ''),
         )
 
         self._agg = aggregate_project_boq(self._project)
@@ -3138,6 +3215,7 @@ class MainWindow(QMainWindow):
             gst_enabled       = self.gst_check.isChecked(),
             freight_amount    = self.freight_spin.value(),
             panel_rate_per_sqm= self.rate_panel.value(),
+            source_dxf_path   = getattr(self, '_current_dxf_path', ''),
         )
         self._agg = aggregate_project_boq(self._project)
         self._acc_boqs = []
@@ -3177,6 +3255,7 @@ class MainWindow(QMainWindow):
             gst_enabled       = self.gst_check.isChecked(),
             freight_amount    = self.freight_spin.value(),
             panel_rate_per_sqm= self.rate_panel.value(),
+            source_dxf_path   = getattr(self, '_current_dxf_path', ''),
         )
         self._agg = aggregate_project_boq(self._project)
         self._acc_boqs = []

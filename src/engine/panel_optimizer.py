@@ -32,6 +32,10 @@ OC_WIDTH:   int = _CFG['panel_system']['oc_width_mm']
 IC_WIDTH:   int = _CFG['panel_system']['ic_width_mm']
 MAX_SPACER: int = _CFG['panel_system']['max_spacer_mm']
 
+# Usable panel widths for BOQ — minimum 100mm.
+# 40mm is the max allowed site gap (spacer), NOT a physical panel.
+PANEL_WIDTHS: list[int] = [w for w in STANDARD_WIDTHS if w >= 100]
+
 # Frozensets for O(1) catalog lookup
 _CATALOG_WIDTHS_SET:   frozenset = frozenset(STANDARD_WIDTHS)
 _CATALOG_HEIGHTS_SET:  frozenset = frozenset(STANDARD_HEIGHTS)
@@ -54,62 +58,80 @@ def is_catalog_panel(panel) -> bool:
     return w in _CATALOG_WIDTHS_SET
 
 
-def find_panel_combination(
-    target_mm: float,
-    available_widths: list[int] = None,
-    max_panels: int = 10,
-) -> tuple[list[int], float]:
-    """
-    Find optimal panel widths combination for a given face dimension.
-
-    Returns:
-        (list of panel widths used, spacer_mm)
-        spacer_mm > 0 means panels don't fully cover target (gap = spacer)
-        spacer_mm < 0 means panels overshoot by abs(spacer_mm)
-    """
-    if available_widths is None:
-        available_widths = STANDARD_WIDTHS
-
-    # Sort descending for greedy preference
-    widths = sorted(available_widths, reverse=True)
-    target = int(round(target_mm))
-
-    # Try exact match using DP (subset sum with repetition allowed)
-    result = _dp_exact(target, widths, max_panels)
-    if result is not None:
-        return result, 0.0
-
-    # Try with spacer: find combo that covers (target - spacer) exactly
-    for spacer in range(1, MAX_SPACER + 1):
-        reduced = target - spacer
-        if reduced <= 0:
-            break
-        result = _dp_exact(reduced, widths, max_panels)
-        if result is not None:
-            return result, float(spacer)
-
-    # Fallback: greedy (may overshoot slightly)
-    combo, overshoot = _greedy_fit(target, widths)
-    return combo, -float(overshoot)  # negative = overshoot
-
-
 def _combo_score(combo: list[int]) -> tuple:
     """
     Score a panel combination — lower tuple value is BETTER.
 
-    Priority derived from actual Nova Formworks quotations:
-      1. Avoid highly unbalanced splits where the smallest panel is
-         less than 1/3 of the largest (e.g. [350,100] for 450mm is bad).
-      2. Fewest total panels (fewer handling pieces on site).
-      3. Largest maximum panel used — e.g. [500,300] over [400,400] for 800mm,
-         [600,600,300] over [500,500,500] for 1500mm.
+    Priority (Nova site practice):
+      1. Fewest panels — fewer pieces = less handling on site.
+      2. Largest maximum panel used — maximise use of 600mm / 500mm panels.
     """
-    max_p = max(combo)
-    min_p = min(combo)
-    # Reject splits where the smallest panel is less than half the largest.
-    # e.g. [600,200] for 800mm is ugly; [500,300] is acceptable.
-    ugly  = 1 if min_p * 2 < max_p else 0
-    return (ugly, len(combo), -max_p)
+    if not combo:
+        return (0, 0)
+    return (len(combo), -max(combo))
+
+
+def find_panel_combination(
+    target_mm: float,
+    available_widths: list[int] = None,
+    max_panels: int = None,
+) -> tuple[list[int], float]:
+    """
+    Find the best panel-width combination for a given face net length.
+
+    Strategy:
+      * Try every allowed site gap (0 … MAX_SPACER mm) so a 3-panel + gap
+        solution beats a 4-panel exact solution.
+      * Score by: fewest panels, then largest max panel.
+      * No panel smaller than 100 mm is ever used; 40 mm is a gap only.
+
+    Returns:
+        (widths_list, spacer_mm)
+        spacer_mm > 0 → gap left between last panel and wall end
+        spacer_mm < 0 → panels overshoot (rare fallback)
+    """
+    if available_widths is None:
+        available_widths = PANEL_WIDTHS  # min 100mm; 40mm is site gap only
+
+    widths = sorted(available_widths, reverse=True)
+    target = int(round(target_mm))
+
+    # Face shorter than minimum panel → pure gap, no panels needed
+    if target <= 0:
+        return [], 0.0
+    if target <= MAX_SPACER:
+        return [], float(target)
+
+    # Max panels: enough to cover target with smallest panels, plus headroom.
+    # This must be large enough for big faces like 8160mm (≈ 14×600).
+    if max_panels is None:
+        max_panels = max(10, (target // min(widths)) + 2)
+
+    # Always prefer a gapless solution — try gap=0 first
+    no_gap = _dp_exact(target, widths, max_panels)
+    if no_gap is not None:
+        return no_gap, 0.0
+
+    # No exact fit — fall back to smallest gap that yields any solution
+    best_combo: list | None = None
+    best_spacer = 0
+
+    for gap in range(1, MAX_SPACER + 1):
+        reduced = target - gap
+        if reduced <= 0:
+            break
+        result = _dp_exact(reduced, widths, max_panels)
+        if result is not None:
+            if best_combo is None or _combo_score(result) < _combo_score(best_combo):
+                best_combo = result
+                best_spacer = gap
+
+    if best_combo is not None:
+        return best_combo, float(best_spacer)
+
+    # Fallback: greedy largest-first (may overshoot by up to min_panel-1 mm)
+    combo, overshoot = _greedy_fit(target, widths)
+    return combo, -float(overshoot)
 
 
 def _dp_exact(target: int, widths: list[int], max_panels: int) -> Optional[list[int]]:
@@ -623,6 +645,77 @@ def optimize_beam_side(element: StructuralElement, panel_height_mm: float) -> El
         f"Beam Side: IC100 at 2 ends per side. "
         f"Flat panels cover {flat_span:.0f}mm span × 2 sides."
     )
+    return boq
+
+
+def optimize_polygon_element(
+    element: StructuralElement,
+    face_nets: list,
+    oc_count: int,
+    ic_count: int,
+    product_height_mm: float,
+) -> 'ElementBOQ':
+    """
+    Generate BOQ for any polygon-shaped element (L-wall, T-wall, I-beam, etc.)
+    from pre-computed face net lengths and corner counts.
+
+    face_nets    : net panel-coverage length per face after IC deductions (mm)
+    oc_count     : number of convex (OC80) corners in the polygon
+    ic_count     : number of concave (IC100) corners in the polygon
+    """
+    boq = ElementBOQ(element=element)
+    panel_h = int(round(product_height_mm))
+    panel_counts: dict = {}
+
+    # OC80 corner panels
+    oc_key = f"OC{OC_WIDTH}X{panel_h}"
+    panel_counts[oc_key] = {'width': OC_WIDTH, 'height': panel_h,
+                             'qty': oc_count, 'is_corner': True, 'is_inner': False}
+
+    # IC100 corner panels
+    ic_key = f"IC{IC_WIDTH}X{panel_h}"
+    if ic_count > 0:
+        panel_counts[ic_key] = {'width': IC_WIDTH, 'height': panel_h,
+                                 'qty': ic_count, 'is_corner': True, 'is_inner': True}
+
+    # Flat panels — fill each face individually using DP
+    for net in face_nets:
+        if net <= 0:
+            continue
+        combo, _spacer = find_panel_combination(net)
+        for w, cnt in _count_panels(combo).items():
+            key = f"{w}X{panel_h}"
+            if key in panel_counts:
+                panel_counts[key]['qty'] += cnt
+            else:
+                panel_counts[key] = {'width': w, 'height': panel_h,
+                                      'qty': cnt, 'is_corner': False, 'is_inner': False}
+
+    # Build PanelEntry list: IC first, then OC, then flat panels sorted width desc
+    boq.panels = []
+    if ic_count > 0 and ic_key in panel_counts:
+        d = panel_counts[ic_key]
+        boq.panels.append(PanelEntry(
+            size_label=ic_key, width_mm=IC_WIDTH, height_mm=panel_h,
+            quantity=d['qty'], is_corner=True, is_inner_corner=True,
+        ))
+    if oc_key in panel_counts:
+        d = panel_counts[oc_key]
+        boq.panels.append(PanelEntry(
+            size_label=oc_key, width_mm=OC_WIDTH, height_mm=panel_h,
+            quantity=d['qty'], is_corner=True,
+        ))
+    flat_keys = sorted(
+        [k for k in panel_counts if not panel_counts[k].get('is_corner')],
+        key=lambda k: panel_counts[k]['width'], reverse=True,
+    )
+    for k in flat_keys:
+        d = panel_counts[k]
+        boq.panels.append(PanelEntry(
+            size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty'],
+        ))
+
+    boq.height_note = f"{panel_h}MM"
     return boq
 
 

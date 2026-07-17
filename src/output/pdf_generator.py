@@ -2,6 +2,7 @@
 PDF Generator — Nova Formworks BOQ and Quotation documents.
 Updated to match 2025 brand guidelines and new templates.
 """
+import io
 import re
 from datetime import date, timedelta
 from pathlib import Path
@@ -226,10 +227,23 @@ def _from_to_block(project: ProjectBOQ, email: str, phone: str, st: dict,
 # BOQ PDF
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _boq_element_table(group: dict, num_sets: int = 1) -> list:
+def _make_diagram_image(boq: ElementBOQ, width_mm: float = 52, height_mm: float = 60,
+                        dxf_doc=None):
+    """Generate a diagram Image flowable for the given BOQ element. Returns None on error."""
+    try:
+        from src.output.diagram_generator import make_element_diagram
+        png_bytes = make_element_diagram(boq, dxf_doc=dxf_doc, dpi=100)
+        buf = io.BytesIO(png_bytes)
+        return Image(buf, width=width_mm * mm, height=height_mm * mm)
+    except Exception:
+        return None
+
+
+def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     """
     Build the per-element-group BOQ table matching the new template exactly.
     Columns: PRODUCT | Qty | UOM | No of Set | Total Qty | Unit Area (SqM) | Total Area (SqM)
+    Right side: floor-plan diagram of the element.
     """
     boq      = group['boq']
     no_sets  = group['count'] * max(1, num_sets)
@@ -244,8 +258,10 @@ def _boq_element_table(group: dict, num_sets: int = 1) -> list:
     req_text = (f"Client Requirement: {req_type}  |  Dimension: {dim_str}  |  "
                 f"FormWork Area: -  |  Height: {h_str}")
 
-    # Column widths: total = CW
-    cw = [CW * f for f in [0.36, 0.08, 0.08, 0.11, 0.11, 0.13, 0.13]]
+    # BOQ table takes left portion; diagram column takes right portion
+    DIAG_W   = 52 * mm   # diagram column width
+    TABLE_W  = CW - DIAG_W
+    cw = [TABLE_W * f for f in [0.36, 0.08, 0.08, 0.11, 0.11, 0.13, 0.13]]
 
     header_row = [req_text, '', '', '', '', '', '']
     col_hdr    = ['PRODUCT', 'Qty', 'UOM', 'No of Set', 'Total Qty',
@@ -256,7 +272,7 @@ def _boq_element_table(group: dict, num_sets: int = 1) -> list:
     first_panel_row = True
 
     for panel in boq.panels:
-        label      = _fmt_panel(panel.size_label)
+        plabel     = _fmt_panel(panel.size_label)
         qty        = panel.quantity
         unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 2)
         total_qty  = qty * no_sets
@@ -264,7 +280,7 @@ def _boq_element_table(group: dict, num_sets: int = 1) -> list:
         total_area += row_area
 
         row = [
-            label,
+            plabel,
             f"{qty:.2f}",
             "nos",
             str(no_sets) if first_panel_row else "",
@@ -315,7 +331,6 @@ def _boq_element_table(group: dict, num_sets: int = 1) -> list:
         ('BOTTOMPADDING',(0, n-1), (-1, n-1), 2),
         # Grid
         ('GRID',        (0, 1), (-1, n-1), 0.4, colors.HexColor('#cccccc')),
-        # Alternating rows
     ]
     # Alternating fill for data rows
     for i in range(2, n - 1):
@@ -324,7 +339,34 @@ def _boq_element_table(group: dict, num_sets: int = 1) -> list:
 
     t.setStyle(_ts(cmds))
 
-    items = [t]
+    # ── Diagram image ─────────────────────────────────────────────────────────
+    diag_h_mm = 58
+    diag_img  = _make_diagram_image(boq, width_mm=DIAG_W / mm, height_mm=diag_h_mm,
+                                    dxf_doc=dxf_doc)
+
+    if diag_img is not None:
+        diag_header = Paragraph(
+            "Floor Plan",
+            ParagraphStyle('dh', fontSize=6.5, fontName='Helvetica-Bold',
+                           textColor=NOVA_NIGHT, alignment=TA_CENTER),
+        )
+        wrapper = Table(
+            [[t, [diag_header, Spacer(1, 1*mm), diag_img]]],
+            colWidths=[TABLE_W, DIAG_W],
+        )
+        wrapper.setStyle(_ts([
+            ('VALIGN',  (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN',   (1, 0), (1,  0),  'CENTER'),
+            ('TOPPADDING',    (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING',  (0, 0), (-1, -1), 0),
+            ('BOX',     (1, 0), (1, 0), 0.5, colors.HexColor('#cccccc')),
+        ]))
+        items = [wrapper]
+    else:
+        items = [t]
+
     for w in boq.warnings:
         items.append(Paragraph(f"  ⚠ {w}", _styles()['warn']))
     items.append(Spacer(1, 3*mm))
@@ -448,10 +490,20 @@ def generate_boq_pdf(project: ProjectBOQ, output_path: str,
     story.append(HRFlowable(width="100%", thickness=0.5, color=NOVA_NAVY))
     story.append(Spacer(1, 2*mm))
 
+    # Load DXF doc once (for diagram region extraction), if source path is set
+    _dxf_doc = None
+    _dxf_path = getattr(project, 'source_dxf_path', '') or ''
+    if _dxf_path:
+        try:
+            import ezdxf as _ezdxf
+            _dxf_doc = _ezdxf.readfile(_dxf_path)
+        except Exception:
+            pass
+
     groups = _group_boqs(project.element_boqs)
     n_sets = max(1, getattr(project, 'num_sets', 1))
     for group in groups:
-        block = _boq_element_table(group, num_sets=n_sets)
+        block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc)
         story.append(KeepTogether(block[:3]))   # try to keep table together
         story += block[3:]
 

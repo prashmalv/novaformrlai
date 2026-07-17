@@ -38,6 +38,7 @@ class StructuralElement:
     notes: str = ""
     junction_type: JunctionType = JunctionType.NONE   # for complex walls
     floor_label: str = ""   # e.g. "GF", "1F", "2F" — for multi-floor tracking
+    polygon_pts: list = field(default_factory=list)  # raw DXF polygon vertices (mm)
 
     @property
     def is_column(self) -> bool:
@@ -119,6 +120,9 @@ class ProjectBOQ:
     ipo_no: str = ""
     date: str = ""
     element_boqs: list[ElementBOQ] = field(default_factory=list)
+
+    # Source drawing (used to extract element diagrams directly from DXF)
+    source_dxf_path: str = ""
 
     # Configuration
     panel_height_mm: float = 3200

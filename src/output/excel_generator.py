@@ -5,6 +5,7 @@ Sheets: BOQ (panel quantities) + DAYS BOQ (reuse schedule) + QUOTATION (pricing)
 from __future__ import annotations
 
 import datetime
+import io
 import re
 from collections import defaultdict, OrderedDict
 from pathlib import Path
@@ -107,6 +108,16 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
     ws  = wb.create_sheet("FORMWORK BOQ")
     row = 1
 
+    # Load DXF doc once for diagram region extraction
+    _dxf_doc = None
+    _dxf_path = getattr(project, 'source_dxf_path', '') or ''
+    if _dxf_path:
+        try:
+            import ezdxf as _ezdxf
+            _dxf_doc = _ezdxf.readfile(_dxf_path)
+        except Exception:
+            pass
+
     # ── Document header ────────────────────────────────────────────────────────
     date_str   = project.date or datetime.date.today().strftime("%d/%m/%Y")
     boq_num    = boq_number or f"OP-ID-{abs(hash(project.project_name)) % 10000:04d}"
@@ -192,8 +203,9 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
     # ── Per-dimension element blocks ──────────────────────────────────────────
     groups = _group_boqs(project.element_boqs)
     col_hdrs = ['PRODUCT', 'Qty', 'UOM', 'No of Set', 'Total Qty',
-                'Unit Area\n(SqM)', 'Total Area\n(SqM)']
-    cw_map   = {'B': 28, 'C': 9, 'D': 9, 'E': 12, 'F': 12, 'G': 14, 'H': 14, 'I': 6}
+                'Unit Area\n(SqM)', 'Total Area\n(SqM)', 'Floor Plan']
+    # Columns B-H = data (7 cols), I = diagram
+    cw_map   = {'B': 28, 'C': 9, 'D': 9, 'E': 12, 'F': 12, 'G': 14, 'H': 14, 'I': 22}
 
     n_sets_proj = max(1, getattr(project, 'num_sets', 1))
     for g in groups:
@@ -204,8 +216,10 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
         dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
         req_type = el.element_type.value.lower()
 
-        # Client Requirement row
-        ws.merge_cells(f"B{row}:H{row}")
+        block_start_row = row  # remember where this element block starts
+
+        # Client Requirement row — spans B:I
+        ws.merge_cells(f"B{row}:I{row}")
         c = ws[f"B{row}"]
         c.value = (f"Client Requirement: {req_type}  |  Dimension: {dim_str}  |  "
                    f"FormWork Area: -  |  Height: {h_str}")
@@ -215,10 +229,11 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
         ws.row_dimensions[row].height = 16
         row += 1
 
-        # Column headers
+        # Column headers — now 8 columns (B-I)
         for ci, h in enumerate(col_hdrs, start=2):
             _hdr(ws, row, ci, h, bg=_PURPLE, fc=_WHITE)
         ws.row_dimensions[row].height = 28
+        panel_hdr_row = row
         row += 1
 
         total_area = 0.0
@@ -240,6 +255,7 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
             _cell(ws, row, 6, f"{total_qty:.2f}", fill=fill)
             _cell(ws, row, 7, f"{unit_a:.2f}",    fill=fill)
             _cell(ws, row, 8, f"{row_area:.2f}",  fill=fill)
+            # Column I left empty — diagram spans this area via merge
             first = False
             row  += 1
 
@@ -249,7 +265,38 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
             ws.cell(row=row, column=ci).value = ""
         _cell(ws, row, 7, "Total Area (in SqM)", bold=True, align="right")
         _cell(ws, row, 8, f"{total_area:.2f}",   bold=True)
-        row += 2   # blank gap
+
+        block_end_row = row
+
+        # ── Diagram in column I (col 9) ────────────────────────────────────
+        diag_top = panel_hdr_row + 1   # first data row after header
+        diag_bot = block_end_row        # total row
+
+        if diag_top <= diag_bot:
+            try:
+                # Merge column I for all panel rows
+                if diag_top < diag_bot:
+                    ws.merge_cells(
+                        start_row=diag_top, start_column=9,
+                        end_row=diag_bot,   end_column=9,
+                    )
+                # Generate PNG diagram (uses DXF doc if available)
+                from src.output.diagram_generator import make_element_diagram
+                png_bytes = make_element_diagram(boq, dxf_doc=_dxf_doc, dpi=100)
+
+                from openpyxl.drawing.image import Image as XLImage
+                img = XLImage(io.BytesIO(png_bytes))
+                n_rows = diag_bot - diag_top + 1
+                row_h_pt = 12
+                cell_h_px = int(n_rows * row_h_pt * 1.33)
+                img.height = max(60, cell_h_px)
+                img.width  = int(cw_map['I'] * 7)
+                img.anchor = f"I{diag_top}"
+                ws.add_image(img)
+            except Exception:
+                pass
+
+        row += 2   # blank gap after block
 
     # ── ACCESSORIES ───────────────────────────────────────────────────────────
     if hasattr(project, '_acc_agg') and project._acc_agg:
