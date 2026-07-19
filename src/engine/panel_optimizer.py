@@ -20,25 +20,42 @@ from typing import Optional
 from src.models.element import (
     StructuralElement, ElementType, JunctionType, PanelEntry, ElementBOQ
 )
+from src.engine import panel_catalog as _catalog
 
-# Load config
+# Load config (still used for STANDARD_HEIGHTS, MAX_SPACER — not in catalog Excel)
 _cfg_path = os.path.join(os.path.dirname(__file__), '../../config/panel_config.json')
 with open(_cfg_path) as f:
     _CFG = json.load(f)
 
-STANDARD_WIDTHS: list[int]  = _CFG['panel_system']['standard_widths_mm']
 STANDARD_HEIGHTS: list[int] = _CFG['panel_system']['standard_heights_mm']
-OC_WIDTH:   int = _CFG['panel_system']['oc_width_mm']
-IC_WIDTH:   int = _CFG['panel_system']['ic_width_mm']
 MAX_SPACER: int = _CFG['panel_system']['max_spacer_mm']
 
-# Usable panel widths for BOQ — minimum 100mm.
-# 40mm is the max allowed site gap (spacer), NOT a physical panel.
-PANEL_WIDTHS: list[int] = [w for w in STANDARD_WIDTHS if w >= 100]
+# Dynamic accessors — always read from active catalog (central → local → default JSON).
+# Use these instead of the old module-level constants wherever widths are needed.
+def _std_widths() -> list:
+    return _catalog.get_flat_widths()
 
-# Frozensets for O(1) catalog lookup
-_CATALOG_WIDTHS_SET:   frozenset = frozenset(STANDARD_WIDTHS)
-_CATALOG_HEIGHTS_SET:  frozenset = frozenset(STANDARD_HEIGHTS)
+def _oc() -> int:
+    return _catalog.get_oc_width()
+
+def _ic() -> int:
+    return _catalog.get_ic_width()
+
+def _panel_widths() -> list:
+    return _catalog.get_usable_widths(min_width=100)
+
+# Backward-compat module-level names — NOTE: these are snapshots taken at import time.
+# They are kept only so external code that reads them (e.g. tests) doesn't break.
+# Internal optimizer functions call _std_widths()/_oc()/_ic() dynamically.
+STANDARD_WIDTHS: list[int] = _catalog.get_flat_widths()
+OC_WIDTH:   int = _catalog.get_oc_width()
+IC_WIDTH:   int = _catalog.get_ic_width()
+PANEL_WIDTHS: list[int] = _catalog.get_usable_widths(min_width=100)
+
+_CATALOG_HEIGHTS_SET: frozenset = frozenset(STANDARD_HEIGHTS)
+
+def _catalog_widths_set() -> frozenset:
+    return frozenset(_std_widths())
 
 
 def is_catalog_panel(panel) -> bool:
@@ -55,7 +72,7 @@ def is_catalog_panel(panel) -> bool:
         return False
     if panel.is_corner or panel.is_inner_corner:
         return True        # OC80 / IC100 at any standard height ✓
-    return w in _CATALOG_WIDTHS_SET
+    return w in _catalog_widths_set()
 
 
 def _combo_score(combo: list[int]) -> tuple:
@@ -91,7 +108,7 @@ def find_panel_combination(
         spacer_mm < 0 → panels overshoot (rare fallback)
     """
     if available_widths is None:
-        available_widths = PANEL_WIDTHS  # min 100mm; 40mm is site gap only
+        available_widths = _panel_widths()  # live from active catalog; min 100mm
 
     widths = sorted(available_widths, reverse=True)
     target = int(round(target_mm))
@@ -248,16 +265,16 @@ def optimize_column(element: StructuralElement, panel_height_mm: float) -> Eleme
     _add_panels(wid_combo, face_count=2)
 
     # OC (Outer Corner): 4 corners × rows
-    oc_key = f"OC{OC_WIDTH}X{panel_h}"
+    oc_key = f"OC{_oc()}X{panel_h}"
     panel_counts[oc_key] = {
-        'width': OC_WIDTH, 'height': panel_h,
+        'width': _oc(), 'height': panel_h,
         'qty': 4 * rows, 'is_corner': True
     }
 
     # Build PanelEntry list (OC first, then flat panels sorted by width desc)
     oc_entry = PanelEntry(
         size_label=oc_key,
-        width_mm=OC_WIDTH, height_mm=panel_h,
+        width_mm=_oc(), height_mm=panel_h,
         quantity=panel_counts[oc_key]['qty'],
         is_corner=True
     )
@@ -319,8 +336,8 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
     # Straight wall: 4 OC (2 ends × 2 faces)
     # C-shape: only 2 OC at the open end; enclosed end gets OC too = 4 total
     oc_qty = 4 * rows
-    oc_key = f"OC{OC_WIDTH}X{panel_h}"
-    panel_counts[oc_key] = {'width': OC_WIDTH, 'height': panel_h,
+    oc_key = f"OC{_oc()}X{panel_h}"
+    panel_counts[oc_key] = {'width': _oc(), 'height': panel_h,
                              'qty': oc_qty, 'is_corner': True}
 
     # --- IC corners at junctions ---
@@ -335,9 +352,9 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
         ic_qty = 4 * rows        # 2 inner corners of C-shape
         warnings.append("C/U-shaped wall: IC100 panels added at both inner corners.")
 
-    ic_key = f"IC{IC_WIDTH}X{panel_h}"
+    ic_key = f"IC{_ic()}X{panel_h}"
     if ic_qty > 0:
-        panel_counts[ic_key] = {'width': IC_WIDTH, 'height': panel_h,
+        panel_counts[ic_key] = {'width': _ic(), 'height': panel_h,
                                  'qty': ic_qty, 'is_corner': True,
                                  'is_inner': True}
 
@@ -346,12 +363,12 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
     if ic_key in panel_counts:
         d = panel_counts[ic_key]
         boq.panels.append(PanelEntry(
-            size_label=ic_key, width_mm=IC_WIDTH, height_mm=panel_h,
+            size_label=ic_key, width_mm=_ic(), height_mm=panel_h,
             quantity=d['qty'], is_corner=True, is_inner_corner=True
         ))
 
     boq.panels.append(PanelEntry(
-        size_label=oc_key, width_mm=OC_WIDTH, height_mm=panel_h,
+        size_label=oc_key, width_mm=_oc(), height_mm=panel_h,
         quantity=panel_counts[oc_key]['qty'], is_corner=True
     ))
 
@@ -415,23 +432,23 @@ def optimize_box_culvert(element: StructuralElement, panel_height_mm: float) -> 
     _add(w_combo, 2)
 
     # IC100 at all 4 inner vertical corners × rows
-    ic_key = f"IC{IC_WIDTH}X{panel_h}"
-    panel_counts[ic_key] = {'width': IC_WIDTH, 'height': panel_h,
+    ic_key = f"IC{_ic()}X{panel_h}"
+    panel_counts[ic_key] = {'width': _ic(), 'height': panel_h,
                              'qty': 4 * rows, 'is_corner': True, 'is_inner': True}
 
     # OC80 at outer top corners (where walls meet soffit) × 2 per end × rows
-    oc_key = f"OC{OC_WIDTH}X{panel_h}"
-    panel_counts[oc_key] = {'width': OC_WIDTH, 'height': panel_h,
+    oc_key = f"OC{_oc()}X{panel_h}"
+    panel_counts[oc_key] = {'width': _oc(), 'height': panel_h,
                              'qty': 4 * rows, 'is_corner': True}
 
     # Build panel list: IC → OC → flat
     boq.panels = []
     boq.panels.append(PanelEntry(
-        size_label=ic_key, width_mm=IC_WIDTH, height_mm=panel_h,
+        size_label=ic_key, width_mm=_ic(), height_mm=panel_h,
         quantity=panel_counts[ic_key]['qty'], is_corner=True, is_inner_corner=True
     ))
     boq.panels.append(PanelEntry(
-        size_label=oc_key, width_mm=OC_WIDTH, height_mm=panel_h,
+        size_label=oc_key, width_mm=_oc(), height_mm=panel_h,
         quantity=panel_counts[oc_key]['qty'], is_corner=True
     ))
     for k in sorted([k for k in panel_counts if k not in (oc_key, ic_key)],
@@ -489,22 +506,22 @@ def optimize_drain(element: StructuralElement, panel_height_mm: float) -> Elemen
     _add(w_combo, 1)   # 1 base (bottom inner face)
 
     # IC100 at 2 bottom inner corners × rows
-    ic_key = f"IC{IC_WIDTH}X{panel_h}"
-    panel_counts[ic_key] = {'width': IC_WIDTH, 'height': panel_h,
+    ic_key = f"IC{_ic()}X{panel_h}"
+    panel_counts[ic_key] = {'width': _ic(), 'height': panel_h,
                              'qty': 2 * rows, 'is_corner': True, 'is_inner': True}
 
     # OC80 at 4 top outer corners × rows
-    oc_key = f"OC{OC_WIDTH}X{panel_h}"
-    panel_counts[oc_key] = {'width': OC_WIDTH, 'height': panel_h,
+    oc_key = f"OC{_oc()}X{panel_h}"
+    panel_counts[oc_key] = {'width': _oc(), 'height': panel_h,
                              'qty': 4 * rows, 'is_corner': True}
 
     boq.panels = []
     boq.panels.append(PanelEntry(
-        size_label=ic_key, width_mm=IC_WIDTH, height_mm=panel_h,
+        size_label=ic_key, width_mm=_ic(), height_mm=panel_h,
         quantity=panel_counts[ic_key]['qty'], is_corner=True, is_inner_corner=True
     ))
     boq.panels.append(PanelEntry(
-        size_label=oc_key, width_mm=OC_WIDTH, height_mm=panel_h,
+        size_label=oc_key, width_mm=_oc(), height_mm=panel_h,
         quantity=panel_counts[oc_key]['qty'], is_corner=True
     ))
     for k in sorted([k for k in panel_counts if k not in (oc_key, ic_key)],
@@ -544,7 +561,7 @@ def optimize_beam_bottom(element: StructuralElement, panel_height_mm: float) -> 
     beam_w = element.width_mm               # internal clear width
 
     # Find the nearest standard flat panel width ≥ beam_w
-    flat_w = next((w for w in sorted(STANDARD_WIDTHS) if w >= beam_w), max(STANDARD_WIDTHS))
+    flat_w = next((w for w in sorted(_std_widths()) if w >= beam_w), max(_std_widths()))
     if flat_w > beam_w:
         warnings.append(
             f"Beam width {beam_w:.0f}mm: using nearest standard panel {flat_w}mm "
@@ -555,7 +572,7 @@ def optimize_beam_bottom(element: StructuralElement, panel_height_mm: float) -> 
     label = f"(OC+{flat_w}+OC)X{depth}"
 
     # area = (OC_width + flat_w + OC_width) × depth
-    total_w_mm = OC_WIDTH + flat_w + OC_WIDTH
+    total_w_mm = _oc() + flat_w + _oc()
     area_sqm = round(total_w_mm * depth / 1_000_000, 6)
 
     boq.panels = [
@@ -595,8 +612,8 @@ def optimize_beam_side(element: StructuralElement, panel_height_mm: float) -> El
     beam_h  = int(round(element.height_mm))   # beam side height
     beam_L  = element.length_mm               # beam span
 
-    # IC100 occupies IC_WIDTH mm at each end of both sides
-    ic_used = IC_WIDTH * 2
+    # IC100 occupies _ic() mm at each end of both sides
+    ic_used = _ic() * 2
     flat_span = max(0.0, beam_L - ic_used)
 
     # Flat panel combination for the remaining span
@@ -610,9 +627,9 @@ def optimize_beam_side(element: StructuralElement, panel_height_mm: float) -> El
     panel_counts: dict[str, dict] = {}
 
     # IC100 at 2 ends × 2 sides
-    ic_key = f"IC{IC_WIDTH}X{beam_h}"
+    ic_key = f"IC{_ic()}X{beam_h}"
     panel_counts[ic_key] = {
-        'width': IC_WIDTH, 'height': beam_h,
+        'width': _ic(), 'height': beam_h,
         'qty': 4 * element.quantity, 'is_corner': True, 'is_inner': True
     }
 
@@ -628,7 +645,7 @@ def optimize_beam_side(element: StructuralElement, panel_height_mm: float) -> El
 
     boq.panels = []
     boq.panels.append(PanelEntry(
-        size_label=ic_key, width_mm=IC_WIDTH, height_mm=beam_h,
+        size_label=ic_key, width_mm=_ic(), height_mm=beam_h,
         quantity=panel_counts[ic_key]['qty'], is_corner=True, is_inner_corner=True
     ))
     for k in sorted([k for k in panel_counts if k != ic_key],
@@ -668,14 +685,14 @@ def optimize_polygon_element(
     panel_counts: dict = {}
 
     # OC80 corner panels
-    oc_key = f"OC{OC_WIDTH}X{panel_h}"
-    panel_counts[oc_key] = {'width': OC_WIDTH, 'height': panel_h,
+    oc_key = f"OC{_oc()}X{panel_h}"
+    panel_counts[oc_key] = {'width': _oc(), 'height': panel_h,
                              'qty': oc_count, 'is_corner': True, 'is_inner': False}
 
     # IC100 corner panels
-    ic_key = f"IC{IC_WIDTH}X{panel_h}"
+    ic_key = f"IC{_ic()}X{panel_h}"
     if ic_count > 0:
-        panel_counts[ic_key] = {'width': IC_WIDTH, 'height': panel_h,
+        panel_counts[ic_key] = {'width': _ic(), 'height': panel_h,
                                  'qty': ic_count, 'is_corner': True, 'is_inner': True}
 
     # Flat panels — fill each face individually using DP
@@ -696,13 +713,13 @@ def optimize_polygon_element(
     if ic_count > 0 and ic_key in panel_counts:
         d = panel_counts[ic_key]
         boq.panels.append(PanelEntry(
-            size_label=ic_key, width_mm=IC_WIDTH, height_mm=panel_h,
+            size_label=ic_key, width_mm=_ic(), height_mm=panel_h,
             quantity=d['qty'], is_corner=True, is_inner_corner=True,
         ))
     if oc_key in panel_counts:
         d = panel_counts[oc_key]
         boq.panels.append(PanelEntry(
-            size_label=oc_key, width_mm=OC_WIDTH, height_mm=panel_h,
+            size_label=oc_key, width_mm=_oc(), height_mm=panel_h,
             quantity=d['qty'], is_corner=True,
         ))
     flat_keys = sorted(

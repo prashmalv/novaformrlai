@@ -126,6 +126,7 @@ class AdminPanelDialog(QDialog):
         tabs.addTab(self._build_audit_tab(),       "📋  Audit Log")
         tabs.addTab(self._build_daily_logs_tab(),  "📁  Daily Log Files")
         tabs.addTab(self._build_network_tab(),     "🔗  Database Settings")
+        tabs.addTab(self._build_catalog_tab(),     "📦  Panel Catalog")
         root.addWidget(tabs)
 
     # ── Tab 1: Team Members ───────────────────────────────────────────────────
@@ -969,3 +970,237 @@ class AdminPanelDialog(QDialog):
             return
         self._central_path_edit.clear()
         self._save_db_path()
+
+    # ── Tab 5: Panel Catalog ──────────────────────────────────────────────────
+
+    def _build_catalog_tab(self) -> QWidget:
+        from src.engine import panel_catalog as _pc
+
+        page = QWidget()
+        vbox = QVBoxLayout(page)
+        vbox.setContentsMargins(20, 16, 20, 16)
+        vbox.setSpacing(12)
+
+        grp_style = f"""
+            QGroupBox {{
+                font-weight:700; font-size:10pt;
+                color:{_NOVA_BLUE};
+                border:1px solid #b8cfe8;
+                border-radius:6px;
+                margin-top:10px;
+                padding:8px 4px 4px 4px;
+            }}
+            QGroupBox::title {{ subcontrol-origin:margin; left:10px; }}
+        """
+
+        # ── Current status ──────────────────────────────────────────
+        grp_status = QGroupBox("Active Panel Catalog")
+        grp_status.setStyleSheet(grp_style)
+        sv = QVBoxLayout(grp_status)
+        sv.setSpacing(6)
+
+        self._catalog_status_lbl = QLabel()
+        self._catalog_status_lbl.setWordWrap(True)
+        self._catalog_status_lbl.setFont(_ui_font(9))
+        self._catalog_status_lbl.setStyleSheet(
+            "background:#f0f4fa; border:1px solid #ccdae8; border-radius:4px;"
+            "padding:8px; font-family:monospace; color:#1a3a5c;"
+        )
+        sv.addWidget(self._catalog_status_lbl)
+
+        btn_refresh = QPushButton("↻  Refresh Status")
+        btn_refresh.setStyleSheet(_BTN)
+        btn_refresh.setFixedWidth(160)
+        btn_refresh.clicked.connect(self._refresh_catalog_status)
+        sv.addWidget(btn_refresh, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        vbox.addWidget(grp_status)
+
+        # ── Upload to Central (affects ALL users) ────────────────────
+        grp_central = QGroupBox("Upload to Central Server  ★  All users auto-sync on next start")
+        grp_central.setStyleSheet(grp_style)
+        cv = QVBoxLayout(grp_central)
+        cv.setSpacing(6)
+
+        note_c = QLabel(
+            "Saves panel_catalog.xlsx into the Central DB folder.\n"
+            "Every user who can reach that folder will load this catalog automatically."
+        )
+        note_c.setWordWrap(True)
+        note_c.setStyleSheet(f"color:{_HINT}; font-size:9pt;")
+        cv.addWidget(note_c)
+
+        h_central = QHBoxLayout()
+        self._central_cat_edit = QLineEdit()
+        self._central_cat_edit.setPlaceholderText("Select panel_catalog.xlsx to upload…")
+        self._central_cat_edit.setReadOnly(True)
+        h_central.addWidget(self._central_cat_edit)
+
+        btn_browse_c = QPushButton("Browse…")
+        btn_browse_c.setStyleSheet(_BTN)
+        btn_browse_c.setFixedWidth(90)
+        btn_browse_c.clicked.connect(self._browse_central_catalog)
+        h_central.addWidget(btn_browse_c)
+
+        btn_upload_c = QPushButton("Upload to Central")
+        btn_upload_c.setStyleSheet(_BTN)
+        btn_upload_c.setFixedWidth(150)
+        btn_upload_c.clicked.connect(self._upload_central_catalog)
+        h_central.addWidget(btn_upload_c)
+
+        cv.addLayout(h_central)
+        vbox.addWidget(grp_central)
+
+        # ── Local Override (this machine only) ───────────────────────
+        grp_local = QGroupBox("Local Override  (this machine only — if central is unreachable)")
+        grp_local.setStyleSheet(grp_style)
+        lv = QVBoxLayout(grp_local)
+        lv.setSpacing(6)
+
+        note_l = QLabel(
+            "Saves panel_catalog_local.xlsx in the config folder of this installation.\n"
+            "Used only when the central catalog cannot be reached."
+        )
+        note_l.setWordWrap(True)
+        note_l.setStyleSheet(f"color:{_HINT}; font-size:9pt;")
+        lv.addWidget(note_l)
+
+        h_local = QHBoxLayout()
+        self._local_cat_edit = QLineEdit()
+        self._local_cat_edit.setPlaceholderText("Select panel_catalog.xlsx for local override…")
+        self._local_cat_edit.setReadOnly(True)
+        h_local.addWidget(self._local_cat_edit)
+
+        btn_browse_l = QPushButton("Browse…")
+        btn_browse_l.setStyleSheet(_BTN)
+        btn_browse_l.setFixedWidth(90)
+        btn_browse_l.clicked.connect(self._browse_local_catalog)
+        h_local.addWidget(btn_browse_l)
+
+        btn_upload_l = QPushButton("Set as Local Override")
+        btn_upload_l.setStyleSheet(_BTN)
+        btn_upload_l.setFixedWidth(170)
+        btn_upload_l.clicked.connect(self._upload_local_catalog)
+        h_local.addWidget(btn_upload_l)
+
+        lv.addLayout(h_local)
+
+        btn_clear_l = QPushButton("✕  Remove Local Override")
+        btn_clear_l.setStyleSheet(_BTN_RED)
+        btn_clear_l.setFixedWidth(200)
+        btn_clear_l.clicked.connect(self._clear_local_catalog)
+        lv.addWidget(btn_clear_l, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        vbox.addWidget(grp_local)
+
+        # ── Template download ────────────────────────────────────────
+        grp_tpl = QGroupBox("Excel Template")
+        grp_tpl.setStyleSheet(grp_style)
+        tv = QHBoxLayout(grp_tpl)
+
+        note_t = QLabel("Download a pre-filled template Excel to see the required format (Width_mm, Type columns).")
+        note_t.setWordWrap(True)
+        note_t.setStyleSheet(f"color:{_HINT}; font-size:9pt;")
+        tv.addWidget(note_t)
+
+        btn_tpl = QPushButton("⬇  Download Template")
+        btn_tpl.setStyleSheet(_BTN)
+        btn_tpl.setFixedWidth(175)
+        btn_tpl.clicked.connect(self._download_catalog_template)
+        tv.addWidget(btn_tpl, alignment=Qt.AlignmentFlag.AlignRight)
+
+        vbox.addWidget(grp_tpl)
+        vbox.addStretch()
+
+        self._refresh_catalog_status()
+        return page
+
+    def _refresh_catalog_status(self):
+        try:
+            from src.engine import panel_catalog as _pc
+            _pc.reload()
+            self._catalog_status_lbl.setText(_pc.get_summary())
+        except Exception as e:
+            self._catalog_status_lbl.setText(f"Error loading catalog: {e}")
+
+    def _browse_central_catalog(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Panel Catalog Excel", "",
+            "Excel Files (*.xlsx *.xls);;All Files (*)"
+        )
+        if path:
+            self._central_cat_edit.setText(path)
+
+    def _browse_local_catalog(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Panel Catalog Excel", "",
+            "Excel Files (*.xlsx *.xls);;All Files (*)"
+        )
+        if path:
+            self._local_cat_edit.setText(path)
+
+    def _upload_central_catalog(self):
+        path = self._central_cat_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, "No File", "Please browse and select an Excel file first.")
+            return
+        from src.engine import panel_catalog as _pc
+        ok, msg = _pc.upload_central_catalog(path)
+        if ok:
+            QMessageBox.information(self, "Central Catalog Updated", msg)
+            log_action(self._user['username'], "catalog_upload_central",
+                       f"Uploaded panel catalog to central: {path}")
+        else:
+            QMessageBox.critical(self, "Upload Failed", msg)
+        self._refresh_catalog_status()
+
+    def _upload_local_catalog(self):
+        path = self._local_cat_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, "No File", "Please browse and select an Excel file first.")
+            return
+        from src.engine import panel_catalog as _pc
+        ok, msg = _pc.upload_local_catalog(path)
+        if ok:
+            QMessageBox.information(self, "Local Catalog Saved", msg)
+            log_action(self._user['username'], "catalog_upload_local",
+                       f"Set local panel catalog override: {path}")
+        else:
+            QMessageBox.critical(self, "Save Failed", msg)
+        self._refresh_catalog_status()
+
+    def _clear_local_catalog(self):
+        confirm = QMessageBox.question(
+            self, "Remove Local Override",
+            "Remove the local panel catalog override?\n\n"
+            "The system will fall back to the central catalog (or default if central is unavailable).",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        from src.engine import panel_catalog as _pc
+        ok, msg = _pc.clear_local_catalog()
+        QMessageBox.information(self, "Local Catalog Cleared", msg)
+        if ok:
+            log_action(self._user['username'], "catalog_clear_local", "Removed local catalog override")
+        self._refresh_catalog_status()
+
+    def _download_catalog_template(self):
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Save Template As", "panel_catalog_template.xlsx",
+            "Excel Files (*.xlsx)"
+        )
+        if not dest:
+            return
+        import shutil
+        from src.engine import panel_catalog as _pc
+        try:
+            tpl = _pc.create_template_xlsx()
+            shutil.copy2(str(tpl), dest)
+            QMessageBox.information(
+                self, "Template Saved",
+                f"Template saved to:\n{dest}\n\n"
+                "Edit the Width_mm and Type columns, then upload using the buttons above."
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not create template:\n{e}")
