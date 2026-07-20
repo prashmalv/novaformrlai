@@ -1833,10 +1833,11 @@ def parse_nova_shear_walls(
 
     # Build schedule label set to filter out stray labels like SW14
     _sched_labels: set = set()
+    _sched_tbl_local: dict = {}
     if doc is not None:
         try:
-            _sched_tbl = parse_nova_schedule_table(doc)
-            _sched_labels = set(_sched_tbl.keys())
+            _sched_tbl_local = parse_nova_schedule_table(doc)
+            _sched_labels = set(_sched_tbl_local.keys())
         except Exception:
             pass
 
@@ -1860,6 +1861,73 @@ def parse_nova_shear_walls(
             poly_label[pi] = best_label
             poly_dist[pi]  = best_dist
 
+    # ── Conflict resolution: when multiple polys claim the same label, keep
+    #    only those that belong to the DOMINANT shape group.
+    #
+    #    Problem: a small element inside a large shear wall can be closer to the
+    #    SW label than the shear wall polygon's own centroid, so it steals the
+    #    label (e.g. a 750×450 column inside SW11 grabs the SW11 label).
+    #
+    #    Fix: for each label, group the claiming polygons by shape similarity
+    #    (within ±15% on both dimensions).  The dominant group is the one with
+    #    the largest total area.  Polygons not in the dominant group are
+    #    discarded (removed from poly_label so they become unclaimed).
+    from collections import defaultdict as _dd2
+    label_to_pis: dict = _dd2(list)
+    for pi, lbl in poly_label.items():
+        label_to_pis[lbl].append(pi)
+
+    for lbl, pis in label_to_pis.items():
+        if len(pis) <= 1:
+            continue
+
+        polys_for_lbl = [(pi, sig_polys[pi]) for pi in pis]
+        is_ap = _sched_tbl_local.get(lbl) == 'AS_PER_PLAN'
+
+        if is_ap:
+            # AS_PER_PLAN → prefer complex polygons (6+ vertices) over rectangles.
+            # A 6-vertex L-shape is the correct element; a 4-vertex rect inside it
+            # is a smaller column that stole the label due to proximity.
+            complex_pis = [pi2 for pi2, p2 in polys_for_lbl if p2['npts'] >= 6]
+            rect_pis    = [pi2 for pi2, p2 in polys_for_lbl if p2['npts'] <  6]
+            outliers = rect_pis if complex_pis else []
+        else:
+            # Explicit dimensions → find the LARGEST cluster of similarly-sized
+            # polys.  Using the largest individual poly as reference fails when a
+            # stray oversized background rect grabs the label; using the cluster
+            # mode finds the real instances even when one outlier is much bigger.
+            def _group_pis_by_size(pis_list):
+                """Return (dominant_group, outlier_group) by size-cluster majority."""
+                if len(pis_list) <= 1:
+                    return pis_list, []
+                # Sort by area ascending so we can use first poly as "seed"
+                pis_sorted = sorted(pis_list,
+                                    key=lambda p: sig_polys[p]['w'] * sig_polys[p]['h'])
+                best_group, best_outliers = [], pis_sorted  # fallback
+                # Try each poly as the cluster seed; keep the seed that captures most
+                for seed_pi in pis_sorted:
+                    sw = sig_polys[seed_pi]['w']
+                    sh = sig_polys[seed_pi]['h']
+                    grp, out = [], []
+                    for p in pis_sorted:
+                        pw = sig_polys[p]['w']; ph = sig_polys[p]['h']
+                        if (abs(pw - sw) <= sw * 0.15 and
+                                abs(ph - sh) <= sh * 0.15):
+                            grp.append(p)
+                        else:
+                            out.append(p)
+                    if len(grp) > len(best_group):
+                        best_group, best_outliers = grp, out
+                return best_group, best_outliers
+
+            pis_only = [pi2 for pi2, _ in polys_for_lbl]
+            _, outliers = _group_pis_by_size(pis_only)
+
+        # Remove outlier polys — they are wrong matches for this label
+        for pi2 in outliers:
+            del poly_label[pi2]
+            poly_dist.pop(pi2, None)
+
     # ── Rescue pass for unmatched AS_PER_PLAN labels ──────────────────────
     # After polygon-first, some AS_PER_PLAN elements may have no polygon
     # because a stray label of ANOTHER schedule element claimed their polygon.
@@ -1868,8 +1936,7 @@ def parse_nova_shear_walls(
     # (suggesting it captured an extra polygon that belongs here).
     matched_labels = set(poly_label.values())
     ap_plan_labels = {
-        lbl for lbl, dim in (_sched_labels and
-                              (parse_nova_schedule_table(doc) if doc else {}) or {}).items()
+        lbl for lbl, dim in _sched_tbl_local.items()
         if dim == 'AS_PER_PLAN' and lbl not in matched_labels
     } if _sched_labels else set()
 
@@ -2196,8 +2263,45 @@ def parse_nova_full(
         except Exception as e:
             return [], [], f"Cannot open DXF: {e}"
 
-    # ── Step 1: schedule table ─────────────────────────────────────────────
+    # ── Step 1: schedule table (authoritative dimensions) ─────────────────
     schedule = parse_nova_schedule_table(doc)
+
+    # ── Step 1b: count all closed 4-vertex polys by their bounding-box dims
+    #   Used to count instances of simple rectangular elements (columns/walls)
+    #   when label-proximity matching fails or gives wrong qty.
+    try:
+        _msp = doc.modelspace()
+        _scale = _detect_scale(doc, _msp)
+    except Exception:
+        _msp = None
+        _scale = 1.0
+
+    def _count_rect_polys_by_dim(target_len_mm: float, target_wid_mm: float,
+                                  tol_frac: float = 0.06) -> int:
+        """Count closed 4-vertex polys whose bbox matches the given dims (±tol_frac)."""
+        if _msp is None:
+            return 0
+        count = 0
+        for _ent in _msp:
+            if _ent.dxftype() != 'LWPOLYLINE':
+                continue
+            try:
+                if not _ent.is_closed:
+                    continue
+                _pts = list(_ent.get_points('xy'))
+                if len(_pts) != 4:
+                    continue
+                _xs = [p[0] for p in _pts]; _ys = [p[1] for p in _pts]
+                _w = (max(_xs) - min(_xs)) * _scale
+                _h = (max(_ys) - min(_ys)) * _scale
+                _len = max(_w, _h); _wid = min(_w, _h)
+                tol_l = target_len_mm * tol_frac
+                tol_w = target_wid_mm * tol_frac
+                if abs(_len - target_len_mm) <= tol_l and abs(_wid - target_wid_mm) <= tol_w:
+                    count += 1
+            except Exception:
+                pass
+        return count
 
     # ── Step 2: polygon geometry (qty counts + AS_PER_PLAN shapes) ─────────
     poly_elements, poly_boqs, _ = parse_nova_shear_walls(
@@ -2281,14 +2385,17 @@ def parse_nova_full(
             boqs.append(boq)
             continue
         length_mm, width_mm = sched_val
+        # Count actual instances in the drawing by dimension matching
+        dim_qty = _count_rect_polys_by_dim(length_mm, width_mm)
+        qty = dim_qty if dim_qty > 0 else 1
         elem = StructuralElement(
             element_type=_elem_type(label_up),
             label=label_up,
             length_mm=length_mm,
             width_mm=width_mm,
             height_mm=casting_height_mm,
-            quantity=1,
-            notes=f"Schedule: {length_mm}×{width_mm}mm (verify qty from drawing)",
+            quantity=qty,
+            notes=f"Schedule: {length_mm}×{width_mm}mm",
         )
         try:
             boq = _compute_boq(elem, panel_height_mm=product_height_mm)
