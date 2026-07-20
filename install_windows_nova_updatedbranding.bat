@@ -158,18 +158,23 @@ if errorlevel 1 (
 )
 echo  Virtual environment created.
 
-REM ── 5. Activate venv and upgrade pip ────────────────────
+REM ── 5. Upgrade pip ──────────────────────────────────────
+REM    Use full venv python path — avoids pip self-replacement restart issue.
 echo.
-echo [5/6] Activating environment and upgrading pip...
-call "%APP_DIR%\venv\Scripts\activate.bat"
-python -m pip install --upgrade pip --quiet
-echo  pip upgraded.
+echo [5/6] Upgrading pip (please wait)...
+"%APP_DIR%\venv\Scripts\python.exe" -m pip install --upgrade pip --quiet
+if errorlevel 1 (
+    echo  Warning: pip upgrade skipped — using bundled version.
+)
+echo  pip ready.
 
 REM ── 6. Install dependencies ─────────────────────────────
 echo.
-echo [6/6] Installing dependencies (this may take a few minutes)...
+echo [6/6] Installing dependencies (this may take 3-5 minutes)...
 echo  Packages: PyQt6, ReportLab, openpyxl, ezdxf, matplotlib, pymupdf...
-pip install -r "%APP_DIR%\requirements.txt"
+echo  Please wait — do NOT close this window.
+echo.
+"%APP_DIR%\venv\Scripts\python.exe" -m pip install -r "%APP_DIR%\requirements.txt" --timeout 120
 if errorlevel 1 (
     echo.
     echo  ERROR: Dependency installation failed.
@@ -177,6 +182,7 @@ if errorlevel 1 (
     echo    1. Internet connection is active
     echo    2. Firewall / antivirus is not blocking pip
     echo    3. Try running this script as Administrator
+    echo    4. If behind a proxy, set HTTP_PROXY environment variable
     echo.
     pause
     exit /b 1
