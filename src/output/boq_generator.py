@@ -29,6 +29,8 @@ def aggregate_project_boq(project: ProjectBOQ) -> dict:
     for eboq in project.element_boqs:
         elem_qty = eboq.element.quantity * n_sets
         for panel in eboq.panels:
+            if getattr(panel, 'is_filler', False):
+                continue   # fill plates excluded from cost/area totals
             key = panel.size_label
             summary[key]['width_mm'] = panel.width_mm
             summary[key]['height_mm'] = panel.height_mm

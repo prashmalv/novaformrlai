@@ -125,20 +125,24 @@ def _fmt_acc(size_label: str) -> tuple[str, str]:
     return f"accessories - {size_label.lower()}", "nos"
 
 
+def _natural_key(label: str) -> list:
+    """Natural sort key: 'C10' sorts after 'C9', not after 'C1'."""
+    import re as _re
+    return [int(p) if p.isdigit() else p.upper() for p in _re.split(r'(\d+)', label)]
+
+
 def _group_boqs(element_boqs: list) -> list[dict]:
-    """
-    Group ElementBOQs by (element_type, length_mm, width_mm).
-    Returns list of dicts with keys: boq, count, labels, height_mm.
-    """
-    groups: dict[tuple, dict] = OrderedDict()
-    for boq in element_boqs:
-        el = boq.element
-        key = (el.element_type, round(el.length_mm), round(el.width_mm))
-        if key not in groups:
-            groups[key] = {'boq': boq, 'count': 0, 'labels': [], 'height_mm': el.height_mm}
-        groups[key]['count'] += max(1, el.quantity)
-        groups[key]['labels'].append(el.label)
-    return list(groups.values())
+    """One entry per element, sorted by natural label order (C1, C2 … C10, SW1 …)."""
+    sorted_boqs = sorted(element_boqs, key=lambda b: _natural_key(b.element.label))
+    return [
+        {
+            'boq':       boq,
+            'count':     max(1, boq.element.quantity),
+            'labels':    [boq.element.label],
+            'height_mm': boq.element.height_mm,
+        }
+        for boq in sorted_boqs
+    ]
 
 
 def _ts(cmds):
@@ -245,18 +249,18 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     Columns: PRODUCT | Qty | UOM | No of Set | Total Qty | Unit Area (SqM) | Total Area (SqM)
     Right side: floor-plan diagram of the element.
     """
-    boq      = group['boq']
-    no_sets  = group['count'] * max(1, num_sets)
-    el       = boq.element
+    boq       = group['boq']
+    el        = boq.element
     height_mm = group['height_mm']
+    no_sets   = max(1, el.quantity) * max(1, num_sets)
 
     req_type = el.element_type.value.lower()
     dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
-    h_str    = f"{int(height_mm):,}MM".replace(",", ",")
+    h_str    = f"{int(height_mm)}MM"
 
-    # Client Requirement header row
-    req_text = (f"Client Requirement: {req_type}  |  Dimension: {dim_str}  |  "
-                f"FormWork Area: -  |  Height: {h_str}")
+    # Client Requirement header row — label prominent, qty from drawing
+    req_text = (f"{el.label}  |  {req_type}  |  Dimension: {dim_str}  |  "
+                f"Height: {h_str}  |  No. in Drawing: {el.quantity}")
 
     # BOQ table takes left portion; diagram column takes right portion
     DIAG_W   = 52 * mm   # diagram column width
@@ -270,26 +274,37 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     data = [header_row, col_hdr]
     total_area = 0.0
     first_panel_row = True
+    filler_row_indices = []   # track rows that are fill plates (for grey styling)
 
     for panel in boq.panels:
-        plabel     = _fmt_panel(panel.size_label)
-        qty        = panel.quantity
-        unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 2)
-        total_qty  = qty * no_sets
-        row_area   = round(unit_area * total_qty, 2)
-        total_area += row_area
-
-        row = [
-            plabel,
-            f"{qty:.2f}",
-            "nos",
-            str(no_sets) if first_panel_row else "",
-            f"{total_qty:.2f}",
-            f"{unit_area:.2f}",
-            f"{row_area:.2f}",
-        ]
+        is_filler = getattr(panel, 'is_filler', False)
+        if is_filler:
+            plabel    = f"Fill Plate {int(panel.width_mm)}mm (spacer)"
+            unit_area = 0.0
+            row_area  = 0.0
+            qty       = panel.quantity
+            total_qty = qty * no_sets
+            row = [plabel, f"{qty:.2f}", "nos", "", f"{total_qty:.2f}", "—", "—"]
+            filler_row_indices.append(len(data))
+        else:
+            plabel     = _fmt_panel(panel.size_label)
+            qty        = panel.quantity
+            unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 2)
+            total_qty  = qty * no_sets
+            row_area   = round(unit_area * total_qty, 2)
+            total_area += row_area
+            row = [
+                plabel,
+                f"{qty:.2f}",
+                "nos",
+                str(no_sets) if first_panel_row else "",
+                f"{total_qty:.2f}",
+                f"{unit_area:.2f}",
+                f"{row_area:.2f}",
+            ]
         data.append(row)
-        first_panel_row = False
+        if not is_filler:
+            first_panel_row = False
 
     # Total Area row
     data.append(['', '', '', '', '', 'Total Area (in SqM)', f"{total_area:.2f}"])
@@ -336,6 +351,12 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     for i in range(2, n - 1):
         if i % 2 == 1:
             cmds.append(('BACKGROUND', (0, i), (-1, i), NOVA_SMOKE))
+
+    # Fill plate rows: light grey text to visually distinguish from regular panels
+    _FILLER_GREY = colors.HexColor('#999999')
+    for fi in filler_row_indices:
+        cmds.append(('TEXTCOLOR',  (0, fi), (-1, fi), _FILLER_GREY))
+        cmds.append(('FONTNAME',   (0, fi), (-1, fi), 'Helvetica-Oblique'))
 
     t.setStyle(_ts(cmds))
 
@@ -413,6 +434,8 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
     for boq in element_boqs:
         n = max(1, boq.element.quantity) * max(1, num_sets)
         for p in boq.panels:
+            if getattr(p, 'is_filler', False):
+                continue   # fill plates excluded from project-level summary
             k = p.size_label
             totals[k]['qty'] += p.quantity * n
             totals[k]['w']    = p.width_mm
@@ -535,7 +558,7 @@ def _qtn_details_table(element_boqs: list, price_per_sqm: float) -> Table:
         area = round(boq.total_panel_area_sqm * n, 2)
         price = round(area * price_per_sqm, 2) if price_per_sqm else 0.0
         rows.append([
-            el.element_type.value.lower(),
+            f"{el.label}  ({el.element_type.value.lower()}  {int(el.length_mm)}×{int(el.width_mm)}mm  ×{el.quantity})",
             f"{area:.2f}",
             f"{price_per_sqm:.2f}" if price_per_sqm else "0.00",
             f"{price:.2f}",

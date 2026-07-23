@@ -181,10 +181,12 @@ class AddElementDialog(QDialog):
         form.addRow("Junction Type:", self.junction_combo)
 
         self.floor_edit = QLineEdit()
+        self.floor_edit.setMaxLength(20)
         self.floor_edit.setPlaceholderText("e.g. GF, 1F, 2F (optional)")
         form.addRow("Floor Label:", self.floor_edit)
 
         self.label_edit = QLineEdit()
+        self.label_edit.setMaxLength(20)
         self.label_edit.setPlaceholderText("e.g. C1, SW1, W-A")
         form.addRow("Label:", self.label_edit)
 
@@ -215,6 +217,7 @@ class AddElementDialog(QDialog):
         form.addRow("Quantity (nos):", self.qty_spin)
 
         self.notes_edit = QLineEdit()
+        self.notes_edit.setMaxLength(120)
         self.notes_edit.setPlaceholderText("Optional notes")
         form.addRow("Notes:", self.notes_edit)
 
@@ -1460,6 +1463,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(
             f"NovoForm — Formwork BOQ Generator  |  {self._user['full_name']}")
         self.resize(1200, 800)
+        self.setMinimumSize(960, 640)
         _icon_path = Path(__file__).parent.parent.parent / "assets" / "images" / "NovaLogo.png"
         if _icon_path.exists():
             self.setWindowIcon(QIcon(str(_icon_path)))
@@ -1656,30 +1660,37 @@ class MainWindow(QMainWindow):
         form.setSpacing(10)
 
         self.project_name_edit = QLineEdit()
+        self.project_name_edit.setMaxLength(80)
         self.project_name_edit.setPlaceholderText("e.g. Commercial Complex - Sector 42")
         form.addRow("Project Name:", self.project_name_edit)
 
         self.client_name_edit = QLineEdit()
+        self.client_name_edit.setMaxLength(80)
         self.client_name_edit.setPlaceholderText("Client company name")
         form.addRow("Client Name:", self.client_name_edit)
 
         self.client_addr_edit = QLineEdit()
+        self.client_addr_edit.setMaxLength(120)
         self.client_addr_edit.setPlaceholderText("Client address")
         form.addRow("Client Address:", self.client_addr_edit)
 
         self.ipo_edit = QLineEdit()
+        self.ipo_edit.setMaxLength(40)
         self.ipo_edit.setPlaceholderText("IPO Number (if any)")
         form.addRow("IPO No:", self.ipo_edit)
 
         self.boq_number_edit = QLineEdit()
+        self.boq_number_edit.setMaxLength(40)
         self.boq_number_edit.setPlaceholderText("e.g. BOQ-2025-001 (auto-generated if blank)")
         form.addRow("BOQ Number:", self.boq_number_edit)
 
         self.qtn_number_edit = QLineEdit()
+        self.qtn_number_edit.setMaxLength(40)
         self.qtn_number_edit.setPlaceholderText("e.g. QTN-2025-001 (auto-generated if blank)")
         form.addRow("Quotation Number:", self.qtn_number_edit)
 
         self.date_edit = QLineEdit()
+        self.date_edit.setMaxLength(20)
         self.date_edit.setText(date.today().strftime("%d-%m-%Y"))
         form.addRow("Date:", self.date_edit)
 
@@ -2513,18 +2524,45 @@ class MainWindow(QMainWindow):
              f"{elem_label} (from BOQ tab)")
 
     def _refresh_element_table(self):
+        import re as _re2
+        def _nk(lbl):
+            return [int(p) if p.isdigit() else p.upper() for p in _re2.split(r'(\d+)', lbl)]
+        self._elements.sort(key=lambda e: _nk(e.label))
         self.elem_table.setRowCount(len(self._elements))
+
+        # Row highlight colours
+        # Red   = shape unknown (polygon not found) — enter dims manually
+        # Orange = L/T/C-shaped element with IC (inner-corner) panels
+        _RED_BG    = QColor("#FFCCCC")
+        _ORANGE_BG = QColor("#FFE5B4")
+
         for i, e in enumerate(self._elements):
+            notes_up = (e.notes or "").upper()
+            _is_unread = (e.length_mm == 0 or e.width_mm == 0)
+            _ic_m = _re2.search(r'IC[×X*](\d+)', notes_up)
+            _ic_count = int(_ic_m.group(1)) if _ic_m else 0
+
+            if _is_unread:
+                _row_bg = _RED_BG
+            elif _ic_count > 0:
+                _row_bg = _ORANGE_BG
+            else:
+                _row_bg = None
+
             vals = [
                 e.label, e.element_type.value,
-                f"{e.length_mm:.0f}", f"{e.width_mm:.0f}",
-                f"{e.height_mm:.0f}", str(e.quantity), e.notes
+                "? (enter manually)" if _is_unread else f"{e.length_mm:.0f}",
+                "? (enter manually)" if _is_unread else f"{e.width_mm:.0f}",
+                f"{e.height_mm:.0f}", str(e.quantity),
+                e.notes or ("⚠ Shape not found — enter Length & Width manually" if _is_unread else ""),
             ]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if j == 0:
                     item.setFont(QFont("Helvetica Neue", 10, QFont.Weight.Bold))
+                if _row_bg:
+                    item.setBackground(_row_bg)
                 self.elem_table.setItem(i, j, item)
 
     def _parse_quick_input(self):
@@ -3106,6 +3144,14 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error",
                                      f"Error computing BOQ for {elem.label}: {ex}")
                 return
+
+        # Sort elements + BOQs together by natural label order (C1,C2..C10, SW1,SW2..)
+        import re as _re
+        def _nkey(label):
+            return [int(p) if p.isdigit() else p.upper() for p in _re.split(r'(\d+)', label)]
+        paired = sorted(zip(self._elements, self._boqs), key=lambda x: _nkey(x[0].label))
+        if paired:
+            self._elements, self._boqs = [list(t) for t in zip(*paired)]
 
         # Build project
         self._project = ProjectBOQ(

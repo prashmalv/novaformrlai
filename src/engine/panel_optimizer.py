@@ -209,6 +209,17 @@ def _count_panels(combo: list[int]) -> dict[int, int]:
     return counts
 
 
+def _make_filler_entry(spacer_mm: float, panel_h: int, face_count: int) -> 'PanelEntry':
+    """Create a fill-plate PanelEntry for a gap so that panel widths sum to the full face length."""
+    w = int(round(spacer_mm))
+    return PanelEntry(
+        size_label=f"FP{w}X{panel_h}",
+        width_mm=w, height_mm=panel_h,
+        quantity=face_count,
+        is_filler=True,
+    )
+
+
 def optimize_column(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
     """
     Compute formwork BOQ for a rectangular column.
@@ -292,6 +303,12 @@ def optimize_column(element: StructuralElement, panel_height_mm: float) -> Eleme
             width_mm=d['width'], height_mm=d['height'],
             quantity=d['qty']
         ))
+
+    # Fill plates ensure: sum(panels) + fill = face_length so the math checks out.
+    if len_spacer > 0:
+        boq.panels.append(_make_filler_entry(len_spacer, panel_h, face_count=2))
+    if wid_spacer > 0:
+        boq.panels.append(_make_filler_entry(wid_spacer, panel_h, face_count=2))
 
     boq.spacer_mm = max(len_spacer, wid_spacer)
     boq.warnings = warnings
@@ -382,6 +399,9 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
             size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
         ))
 
+    if spacer > 0:
+        boq.panels.append(_make_filler_entry(spacer, panel_h, face_count=2))
+
     boq.spacer_mm = max(spacer, 0)
     boq.warnings = warnings
     return boq
@@ -458,6 +478,11 @@ def optimize_box_culvert(element: StructuralElement, panel_height_mm: float) -> 
             size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
         ))
 
+    if l_sp > 0:
+        boq.panels.append(_make_filler_entry(l_sp, panel_h, face_count=2))
+    if w_sp > 0:
+        boq.panels.append(_make_filler_entry(w_sp, panel_h, face_count=2))
+
     boq.spacer_mm = max(l_sp, w_sp, 0)
     boq.warnings = warnings
     warnings.append("Box Culvert: verify soffit (top slab) formwork with engineer.")
@@ -530,6 +555,11 @@ def optimize_drain(element: StructuralElement, panel_height_mm: float) -> Elemen
         boq.panels.append(PanelEntry(
             size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
         ))
+
+    if l_sp > 0:
+        boq.panels.append(_make_filler_entry(l_sp, panel_h, face_count=2))
+    if w_sp > 0:
+        boq.panels.append(_make_filler_entry(w_sp, panel_h, face_count=1))
 
     boq.spacer_mm = max(l_sp, w_sp, 0)
     boq.warnings = warnings

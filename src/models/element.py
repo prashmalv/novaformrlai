@@ -83,10 +83,11 @@ class PanelEntry:
     quantity: int
     is_corner: bool = False  # OC or IC type
     is_inner_corner: bool = False
+    is_filler: bool = False  # fill/spacer plate — listed for coverage verification, excluded from area
     area_sqm: float = 0.0
 
     def __post_init__(self):
-        if self.area_sqm == 0.0:
+        if self.area_sqm == 0.0 and not self.is_filler:
             self.area_sqm = round((self.width_mm * self.height_mm) / 1_000_000, 6)
 
     @property

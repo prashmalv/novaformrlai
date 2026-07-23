@@ -1737,6 +1737,26 @@ def _compute_polygon_face_nets(pts: list, corners: list) -> list:
 _SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$')
 
 
+def _get_schedule_regions(raw_texts_xy: list) -> list:
+    """
+    Return (x_min, x_max, y_min, y_max) bounding boxes for schedule table areas.
+    Used to exclude table-area labels from plan-area label counting.
+    """
+    regions = []
+    for kw in ('COLUMN SCHEDULE', 'SHEAR WALL SCHEDULE'):
+        matches = [(x, y) for x, y, t in raw_texts_xy if kw in t.upper()]
+        if not matches:
+            continue
+        sec_x, sec_y = max(matches, key=lambda r: r[1])
+        regions.append((
+            sec_x - 500,    # x_min
+            sec_x + 15000,  # x_max
+            sec_y - 20000,  # y_min
+            sec_y + 2000,   # y_max (include header row itself)
+        ))
+    return regions
+
+
 def parse_nova_shear_walls(
     dxf_path: str,
     product_height_mm: float = 3705.0,
@@ -1794,6 +1814,24 @@ def parse_nova_shear_walls(
         except Exception:
             continue
 
+    # ── Count plan-area label occurrences (exclude schedule table area) ───────
+    # Used as authoritative qty: how many times each label TEXT appears in
+    # the plan/drawing area.  Schedule table labels (COLUMN SCHEDULE rows) are
+    # excluded so they don't inflate the count.
+    _sched_regions = _get_schedule_regions(label_positions)
+
+    def _in_schedule_table(lx: float, ly: float) -> bool:
+        return any(rx0 <= lx <= rx1 and ry0 <= ly <= ry1
+                   for rx0, rx1, ry0, ry1 in _sched_regions)
+
+    from collections import Counter as _LblCounter
+    _plan_label_cnt: dict = {}
+    _raw_cnt = _LblCounter()
+    for _lx, _ly, _ltxt in label_positions:
+        if _SW_LABEL_RE.match(_ltxt) and not _in_schedule_table(_lx, _ly):
+            _raw_cnt[_ltxt.upper()] += 1
+    _plan_label_cnt = dict(_raw_cnt)
+
     # ── Collect all significant closed polylines ───────────────────────────
     sig_polys: list = []  # dict with pts, cx, cy, w, h, npts
     for ent in msp:
@@ -1821,6 +1859,23 @@ def parse_nova_shear_walls(
             })
         except Exception:
             continue
+
+    # Deduplicate identical polygons (same npts + center within 50mm + same size within 50mm).
+    # DXF authoring artifacts can place the exact same LWPOLYLINE twice at identical coordinates.
+    _seen_poly_keys: set = set()
+    _deduped_polys: list = []
+    for _p in sig_polys:
+        _key = (
+            _p['npts'],
+            round(_p['cx'] / 50),
+            round(_p['cy'] / 50),
+            round(_p['w'] / 50),
+            round(_p['h'] / 50),
+        )
+        if _key not in _seen_poly_keys:
+            _seen_poly_keys.add(_key)
+            _deduped_polys.append(_p)
+    sig_polys = _deduped_polys
 
     if not sig_polys:
         return [], [], "No structural polylines found (all shapes smaller than 150mm)"
@@ -1978,10 +2033,25 @@ def parse_nova_shear_walls(
                         shape_taken = True
                         break
                 if shape_taken:
-                    # Candidate is a geometric duplicate of another element's polygon.
-                    # Skip — this label's actual polygon is either missing from the DXF
-                    # or uses a different entity type. Flag as polygon-not-found.
-                    continue
+                    # Before giving up: check if any of THIS label's text positions are
+                    # within LABEL_SEARCH_R of the candidate polygon.
+                    # Multi-floor drawings (common in Nova) can have two different element
+                    # types at the same plan position (e.g. SW8 on GF, SW10 on FF) — both
+                    # produce the same shape polygon but with labels placed at different
+                    # offsets (~panel-height apart). In that case we allow the rescue; qty
+                    # is resolved via plan-area label text count, not polygon count.
+                    _min_lbl_d = LABEL_SEARCH_R
+                    for _lx, _ly, _ltxt in label_positions:
+                        if _ltxt.upper() != lbl:
+                            continue
+                        _d = math.sqrt((sig_polys[best_pi]['cx'] - _lx) ** 2 +
+                                       (sig_polys[best_pi]['cy'] - _ly) ** 2)
+                        if _d < _min_lbl_d:
+                            _min_lbl_d = _d
+                    if _min_lbl_d >= LABEL_SEARCH_R:
+                        # No label text close to this polygon → truly a stray shape match
+                        continue
+                    # Label IS close (within search radius) — rescue despite shape sharing
                 # Re-assign this polygon to the rescued label
                 poly_label[best_pi] = lbl
                 poly_dist[best_pi]  = best_dist
@@ -2010,7 +2080,10 @@ def parse_nova_shear_walls(
         # prefer highest vertex count (L/T-shapes beat rectangles), then largest
         # bounding-box area.  Remaining group members contribute to quantity.
         rep = max(group, key=lambda p: (p['npts'], p['w'] * p['h']))
-        qty = len(group)
+        # Use plan-area label text count as authoritative qty.
+        # Falls back to polygon count only if the label had no text in the plan
+        # (e.g. drawing only has the schedule table, no plan-view labels).
+        qty = _plan_label_cnt.get(label, 0) or len(group)
 
         pts     = rep['pts']
         corners = _classify_polygon_corners(pts)
@@ -2266,42 +2339,49 @@ def parse_nova_full(
     # ── Step 1: schedule table (authoritative dimensions) ─────────────────
     schedule = parse_nova_schedule_table(doc)
 
-    # ── Step 1b: count all closed 4-vertex polys by their bounding-box dims
-    #   Used to count instances of simple rectangular elements (columns/walls)
-    #   when label-proximity matching fails or gives wrong qty.
+    # ── Step 1b: count plan-area label occurrences for schedule-only elements ─
+    # For elements in the schedule that the polygon parser did not find in the
+    # drawing, we count how many times their label TEXT appears in the plan area
+    # (excluding the schedule table region).  This is the authoritative qty.
     try:
-        _msp = doc.modelspace()
-        _scale = _detect_scale(doc, _msp)
+        _msp_pnf = doc.modelspace()
     except Exception:
-        _msp = None
-        _scale = 1.0
+        _msp_pnf = None
 
-    def _count_rect_polys_by_dim(target_len_mm: float, target_wid_mm: float,
-                                  tol_frac: float = 0.06) -> int:
-        """Count closed 4-vertex polys whose bbox matches the given dims (±tol_frac)."""
-        if _msp is None:
-            return 0
-        count = 0
-        for _ent in _msp:
-            if _ent.dxftype() != 'LWPOLYLINE':
-                continue
+    _pnf_raw_texts: list = []
+    if _msp_pnf is not None:
+        for _ent in _msp_pnf:
             try:
-                if not _ent.is_closed:
+                if _ent.dxftype() == 'TEXT':
+                    _raw = _ent.dxf.text
+                    _pos = _ent.dxf.insert
+                elif _ent.dxftype() == 'MTEXT':
+                    try:
+                        _raw = _ent.plain_text()
+                    except Exception:
+                        _raw = _ent.text
+                    _pos = _ent.dxf.insert
+                else:
                     continue
-                _pts = list(_ent.get_points('xy'))
-                if len(_pts) != 4:
-                    continue
-                _xs = [p[0] for p in _pts]; _ys = [p[1] for p in _pts]
-                _w = (max(_xs) - min(_xs)) * _scale
-                _h = (max(_ys) - min(_ys)) * _scale
-                _len = max(_w, _h); _wid = min(_w, _h)
-                tol_l = target_len_mm * tol_frac
-                tol_w = target_wid_mm * tol_frac
-                if abs(_len - target_len_mm) <= tol_l and abs(_wid - target_wid_mm) <= tol_w:
-                    count += 1
+                _cleaned = _clean_mtext_full(_raw)
+                if _cleaned:
+                    _pnf_raw_texts.append((_pos.x, _pos.y, _cleaned))
             except Exception:
-                pass
-        return count
+                continue
+
+    _pnf_sched_regions = _get_schedule_regions(_pnf_raw_texts)
+
+    def _pnf_in_table(lx: float, ly: float) -> bool:
+        return any(rx0 <= lx <= rx1 and ry0 <= ly <= ry1
+                   for rx0, rx1, ry0, ry1 in _pnf_sched_regions)
+
+    from collections import Counter as _PNFCtr
+    _pnf_cnt = _PNFCtr()
+    for _lx, _ly, _lt in _pnf_raw_texts:
+        _lt_u = _lt.strip().upper()
+        if re.match(r'^[A-Z]{1,3}\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):
+            _pnf_cnt[_lt_u] += 1
+    _pnf_label_cnt: dict = dict(_pnf_cnt)
 
     # ── Step 2: polygon geometry (qty counts + AS_PER_PLAN shapes) ─────────
     poly_elements, poly_boqs, _ = parse_nova_shear_walls(
@@ -2364,7 +2444,7 @@ def parse_nova_full(
                 length_mm=0,
                 width_mm=0,
                 height_mm=casting_height_mm,
-                quantity=1,
+                quantity=_pnf_label_cnt.get(label_up, 0) or 1,
                 notes=f"AS_PER_PLAN — polygon shape not found in DXF",
             )
             from src.models.element import ElementBOQ as _BOQ
@@ -2386,8 +2466,7 @@ def parse_nova_full(
             continue
         length_mm, width_mm = sched_val
         # Count actual instances in the drawing by dimension matching
-        dim_qty = _count_rect_polys_by_dim(length_mm, width_mm)
-        qty = dim_qty if dim_qty > 0 else 1
+        qty = _pnf_label_cnt.get(label_up, 0) or 1
         elem = StructuralElement(
             element_type=_elem_type(label_up),
             label=label_up,

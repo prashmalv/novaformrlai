@@ -88,16 +88,24 @@ def _fmt_acc(size_label: str) -> tuple[str, str]:
     return f"accessories - {size_label.lower()}", "nos"
 
 
+def _natural_key(label: str) -> list:
+    """Natural sort key: 'C10' sorts after 'C9', not after 'C1'."""
+    import re as _re
+    return [int(p) if p.isdigit() else p.upper() for p in _re.split(r'(\d+)', label)]
+
+
 def _group_boqs(element_boqs: list) -> list[dict]:
-    groups: dict[tuple, dict] = OrderedDict()
-    for boq in element_boqs:
-        el  = boq.element
-        key = (el.element_type, round(el.length_mm), round(el.width_mm))
-        if key not in groups:
-            groups[key] = {'boq': boq, 'count': 0, 'labels': [], 'height_mm': el.height_mm}
-        groups[key]['count']  += max(1, el.quantity)
-        groups[key]['labels'].append(el.label)
-    return list(groups.values())
+    """One entry per element, sorted by natural label order (C1, C2 … C10, SW1 …)."""
+    sorted_boqs = sorted(element_boqs, key=lambda b: _natural_key(b.element.label))
+    return [
+        {
+            'boq':       boq,
+            'count':     max(1, boq.element.quantity),
+            'labels':    [boq.element.label],
+            'height_mm': boq.element.height_mm,
+        }
+        for boq in sorted_boqs
+    ]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -210,19 +218,19 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
     n_sets_proj = max(1, getattr(project, 'num_sets', 1))
     for g in groups:
         boq      = g['boq']
-        no_sets  = g['count'] * n_sets_proj
         el       = boq.element
-        h_str    = f"{int(g['height_mm']):,}MM"
+        no_sets  = max(1, el.quantity) * n_sets_proj
+        h_str    = f"{int(g['height_mm'])}MM"
         dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
         req_type = el.element_type.value.lower()
 
         block_start_row = row  # remember where this element block starts
 
-        # Client Requirement row — spans B:I
+        # Client Requirement row — spans B:I; label + qty shown prominently
         ws.merge_cells(f"B{row}:I{row}")
         c = ws[f"B{row}"]
-        c.value = (f"Client Requirement: {req_type}  |  Dimension: {dim_str}  |  "
-                   f"FormWork Area: -  |  Height: {h_str}")
+        c.value = (f"{el.label}  |  {req_type}  |  Dimension: {dim_str}  |  "
+                   f"Height: {h_str}  |  No. in Drawing: {el.quantity}")
         c.font  = Font(bold=True, size=8, color=_NIGHT)
         c.fill  = PatternFill("solid", fgColor=_SMOKE)
         c.alignment = Alignment(horizontal="left", vertical="center")
@@ -239,6 +247,22 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
         total_area = 0.0
         first      = True
         for panel in boq.panels:
+            is_filler = getattr(panel, 'is_filler', False)
+            if is_filler:
+                label     = f"Fill Plate {int(panel.width_mm)}mm (spacer)"
+                qty       = panel.quantity
+                total_qty = qty * no_sets
+                fill      = "EEEEEE"   # light grey for filler rows
+                _cell(ws, row, 2, label,      fill=fill, align="left")
+                _cell(ws, row, 3, f"{qty:.2f}", fill=fill)
+                _cell(ws, row, 4, "nos",      fill=fill)
+                _cell(ws, row, 5, "",         fill=fill)
+                _cell(ws, row, 6, f"{total_qty:.2f}", fill=fill)
+                _cell(ws, row, 7, "—",        fill=fill)
+                _cell(ws, row, 8, "—",        fill=fill)
+                row += 1
+                continue
+
             label     = _fmt_panel(panel.size_label)
             qty       = panel.quantity
             unit_a    = round(panel.width_mm * panel.height_mm / 1_000_000, 2)
@@ -347,6 +371,8 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
     for boq in project.element_boqs:
         n = max(1, boq.element.quantity) * _n_sets_proj
         for p in boq.panels:
+            if getattr(p, 'is_filler', False):
+                continue   # fill plates excluded from project-level summary
             totals[p.size_label]['qty'] += p.quantity * n
             totals[p.size_label]['w']    = p.width_mm
             totals[p.size_label]['h']    = p.height_mm
