@@ -2,7 +2,7 @@
 REM ============================================================
 REM  NovoForm — Windows Installer
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.25 — July 2026
+REM  Version: 1.26 — July 2026
 REM  Developed by RLAI (rightleft.ai)
 REM
 REM  INSTALL STRATEGY (v1.21+):
@@ -29,12 +29,12 @@ if "%SRC_DIR:~-1%"=="\" set SRC_DIR=%SRC_DIR:~0,-1%
 REM ── Install directory = current user's local AppData ─────────
 set INSTALL_DIR=%LOCALAPPDATA%\NovoForm
 
-title NovoForm v1.25 Installer
+title NovoForm v1.26 Installer
 
 echo.
 echo  ====================================================
 echo   NovoForm — Formwork Analysis and BOQ Generator
-echo   Version 1.25  ^|  Nova Formworks Pvt. Ltd.
+echo   Version 1.26  ^|  Nova Formworks Pvt. Ltd.
 echo   July 2026  ^|  Developed by RLAI (rightleft.ai)
 echo  ====================================================
 echo.
@@ -42,7 +42,10 @@ echo   Installing for user : %USERNAME%
 echo   Install location    : %INSTALL_DIR%
 echo   Desktop shortcut    : %USERPROFILE%\Desktop\NovoForm.lnk
 echo.
-echo   What's new in v1.25:
+echo   What's new in v1.26:
+echo     - Shear Wall BOQ now covers all 4 faces (same as column)
+echo     - Face-panel layout diagram in BOQ PDF (top-down view per element)
+echo   What was new in v1.25:
 echo     - SW10 (and similar elements) now read correctly from DXF
 echo     - Red highlight for unreadable elements, orange for L-shaped
 echo   What was new in v1.23:
@@ -203,7 +206,7 @@ powershell -NoProfile -Command ^
      $s.TargetPath      = 'wscript.exe'; ^
      $s.Arguments       = '\"%LAUNCHER%\"'; ^
      $s.WorkingDirectory= '%INSTALL_DIR%'; ^
-     $s.Description     = 'NovoForm BOQ Generator — Nova Formworks v1.25'; ^
+     $s.Description     = 'NovoForm BOQ Generator — Nova Formworks v1.26'; ^
      $s.Save()" >nul 2>&1
 
 if exist "%SHORTCUT%" (
@@ -225,7 +228,7 @@ if not exist "%INSTALL_DIR%\config\api_config.json" (
 REM ── Done ─────────────────────────────────────────────────────
 echo.
 echo  ====================================================
-echo   Installation Complete!  ^|  NovoForm v1.25
+echo   Installation Complete!  ^|  NovoForm v1.26
 echo.
 echo   To launch NovoForm:
 echo     Option 1 : Double-click "NovoForm" on your Desktop

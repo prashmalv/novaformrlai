@@ -107,6 +107,10 @@ class ElementBOQ:
     grand_total: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
+    face_panels: list = field(default_factory=list)
+    # Each entry: {'face': 'A', 'label': 'Face A — 900mm', 'dim_mm': 900.0,
+    #              'panels': [600, 300], 'spacer': 0.0}
+
     @property
     def total_panel_area_sqm(self) -> float:
         return round(sum(p.total_area_sqm for p in self.panels), 4)

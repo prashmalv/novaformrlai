@@ -312,6 +312,21 @@ def optimize_column(element: StructuralElement, panel_height_mm: float) -> Eleme
 
     boq.spacer_mm = max(len_spacer, wid_spacer)
     boq.warnings = warnings
+
+    # Per-face breakdown for the top-down panel layout diagram (largest panel first)
+    _len_sorted = sorted(len_combo, reverse=True)
+    _wid_sorted = sorted(wid_combo, reverse=True)
+    boq.face_panels = [
+        {'face': 'A',  'label': f'A — {int(element.length_mm)}mm',
+         'dim_mm': element.length_mm, 'panels': _len_sorted, 'spacer': len_spacer},
+        {'face': 'B',  'label': f'B — {int(element.width_mm)}mm',
+         'dim_mm': element.width_mm,  'panels': _wid_sorted, 'spacer': wid_spacer},
+        {'face': "A'", 'label': f"A' — {int(element.length_mm)}mm",
+         'dim_mm': element.length_mm, 'panels': _len_sorted, 'spacer': len_spacer},
+        {'face': "B'", 'label': f"B' — {int(element.width_mm)}mm",
+         'dim_mm': element.width_mm,  'panels': _wid_sorted, 'spacer': wid_spacer},
+    ]
+
     return boq
 
 
@@ -770,6 +785,8 @@ def compute_boq(element: StructuralElement, panel_height_mm: float = 3200) -> El
     """Main entry: compute BOQ for any element type."""
     if element.is_column or element.is_monolithic:
         return optimize_column(element, panel_height_mm)
+    elif element.element_type == ElementType.SHEAR_WALL:
+        return optimize_column(element, panel_height_mm)  # 4-face treatment like column
     elif element.is_wall:
         return optimize_wall(element, panel_height_mm)
     elif element.is_box_culvert:

@@ -501,6 +501,164 @@ def _embed_static_image(img_path: Path, boq: ElementBOQ, dpi: int = 90) -> bytes
 #  Main dispatcher
 # ══════════════════════════════════════════════════════════════════════════════
 
+def make_face_panel_diagram(boq: ElementBOQ, dpi: int = 100) -> bytes:
+    """
+    Top-down rectangular view showing which panels go on each face.
+    Face A & A' = length faces (front/back).
+    Face B & B' = width faces (left/right sides).
+    """
+    el   = boq.element
+    L_mm = max(float(el.length_mm), 1.0)
+    W_mm = max(float(el.width_mm),  1.0)
+
+    fp_map = {f['face']: f for f in (getattr(boq, 'face_panels', None) or [])}
+    if not fp_map:
+        return make_rect_diagram(L_mm, W_mm, label=el.label, boq=boq, dpi=dpi)
+
+    # Normalized coordinates: element spans (0, 0) → (1.0, aspect)
+    # 1 unit on both X and Y axes = L_mm in real world
+    aspect  = W_mm / L_mm
+    strip_n = 0.20      # strip thickness in normalized units
+    pad_n   = 0.06
+
+    x0, x1 = -strip_n - pad_n, 1.0 + strip_n + pad_n
+    y0, y1 = -strip_n - pad_n, aspect + strip_n + pad_n
+    span_x  = x1 - x0
+    span_y  = y1 - y0
+
+    max_side = 4.5
+    if span_x >= span_y:
+        fw = max_side
+        fh = max(1.8, max_side * span_y / span_x)
+    else:
+        fh = max_side
+        fw = max(1.8, max_side * span_x / span_y)
+
+    fig, ax = plt.subplots(figsize=(fw, fh), dpi=dpi)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    fig.patch.set_facecolor('white')
+
+    # Element rectangle
+    ax.add_patch(mpatches.Rectangle(
+        (0, 0), 1.0, aspect,
+        facecolor='#FFE8EC', edgecolor='#C0001A', linewidth=1.5, zorder=2
+    ))
+    ax.text(0.5, aspect / 2,
+            f'{el.label}\n{int(L_mm)}×{int(W_mm)} mm',
+            ha='center', va='center', fontsize=6.5, color='#333333',
+            fontweight='bold', zorder=3, ma='center')
+
+    # Consistent color per standard panel width
+    _STD_W = [600, 500, 490, 440, 400, 350, 340, 300, 275, 250,
+              230, 200, 150, 125, 100, 40]
+    _CLR   = ['#A8D8FF', '#B8F0C8', '#FFD6A5', '#FFADAD',
+              '#C3ABFF', '#FFF1A8', '#AAF0F0', '#FFCCE8',
+              '#DDFFD8', '#FFE5CC', '#CCDDFF', '#F0DDFF',
+              '#FFEECC', '#CCFFEE', '#FFCCDD', '#EEFFCC']
+
+    def _pcolor(w: int) -> str:
+        try:
+            return _CLR[_STD_W.index(w) % len(_CLR)]
+        except ValueError:
+            return _CLR[int(w) % len(_CLR)]
+
+    def _draw_h_strips(face_key: str, y_bot: float, y_top: float, above: bool):
+        """Horizontal panel strips (Face A / A') spanning the length direction."""
+        fp = fp_map.get(face_key, {})
+        panels_mm = fp.get('panels', [])
+        spacer_mm = fp.get('spacer', 0.0)
+        dim_mm    = fp.get('dim_mm', L_mm)
+        x = 0.0
+        for pw in panels_mm:
+            pw_n = pw / L_mm
+            ax.add_patch(mpatches.Rectangle(
+                (x, y_bot), pw_n, y_top - y_bot,
+                facecolor=_pcolor(int(pw)), edgecolor='#555555',
+                linewidth=0.6, zorder=3
+            ))
+            fs = 4.5 if pw < 200 else 5.5
+            ax.text(x + pw_n / 2, (y_bot + y_top) / 2, str(int(pw)),
+                    ha='center', va='center', fontsize=fs,
+                    color='#111111', fontweight='bold', zorder=4)
+            x += pw_n
+        if spacer_mm > 0:
+            sp_n = spacer_mm / L_mm
+            ax.add_patch(mpatches.Rectangle(
+                (x, y_bot), sp_n, y_top - y_bot,
+                facecolor='#E0E0E0', edgecolor='#AAAAAA',
+                linewidth=0.4, linestyle='--', zorder=3
+            ))
+        # Dimension label on the strip edge
+        lbl_y = y_top + pad_n * 0.25 if above else y_bot - pad_n * 0.25
+        va    = 'bottom' if above else 'top'
+        ax.text(0.5, lbl_y, f'{face_key} ({int(dim_mm)} mm)',
+                ha='center', va=va, fontsize=5.0,
+                color='#C0001A', fontweight='bold', zorder=4)
+
+    def _draw_v_strips(face_key: str, x_left: float, x_right: float, on_right: bool):
+        """Vertical panel strips (Face B / B') spanning the width direction."""
+        fp = fp_map.get(face_key, {})
+        panels_mm = fp.get('panels', [])
+        spacer_mm = fp.get('spacer', 0.0)
+        dim_mm    = fp.get('dim_mm', W_mm)
+        y = 0.0
+        for pw in panels_mm:
+            pw_n = pw / L_mm   # same scale: 1 unit = L_mm
+            ax.add_patch(mpatches.Rectangle(
+                (x_left, y), x_right - x_left, pw_n,
+                facecolor=_pcolor(int(pw)), edgecolor='#555555',
+                linewidth=0.6, zorder=3
+            ))
+            fs = 4.5 if pw < 200 else 5.5
+            ax.text((x_left + x_right) / 2, y + pw_n / 2, str(int(pw)),
+                    ha='center', va='center', fontsize=fs,
+                    color='#111111', fontweight='bold', rotation=90, zorder=4)
+            y += pw_n
+        if spacer_mm > 0:
+            sp_n = spacer_mm / L_mm
+            ax.add_patch(mpatches.Rectangle(
+                (x_left, y), x_right - x_left, sp_n,
+                facecolor='#E0E0E0', edgecolor='#AAAAAA',
+                linewidth=0.4, linestyle='--', zorder=3
+            ))
+        # Dimension label beside the strip
+        lbl_x = x_right + pad_n * 0.25 if on_right else x_left - pad_n * 0.25
+        ha    = 'left' if on_right else 'right'
+        ax.text(lbl_x, aspect / 2,
+                f'{face_key}\n({int(dim_mm)} mm)',
+                ha=ha, va='center', fontsize=4.5,
+                color='#C0001A', fontweight='bold',
+                rotation=90 if on_right else -90,
+                rotation_mode='anchor', zorder=4)
+
+    # Face A — top (length direction)
+    _draw_h_strips('A',  y_bot=aspect,         y_top=aspect + strip_n, above=True)
+    # Face A' — bottom (length direction, opposite)
+    _draw_h_strips("A'", y_bot=-strip_n,        y_top=0.0,              above=False)
+    # Face B — right (width direction)
+    _draw_v_strips('B',  x_left=1.0,            x_right=1.0 + strip_n,  on_right=True)
+    # Face B' — left (width direction, opposite)
+    _draw_v_strips("B'", x_left=-strip_n,       x_right=0.0,            on_right=False)
+
+    # OC80 corner dots at all 4 corners
+    for cx, cy in [(0, 0), (1.0, 0), (1.0, aspect), (0, aspect)]:
+        ax.plot(cx, cy, 's', color='#CC4444', markersize=6,
+                markeredgecolor='#AA0000', markeredgewidth=0.5, zorder=6)
+
+    ax.set_title(f'{el.label} — Panel Layout (Top View)',
+                 fontsize=7, color='#444444', pad=3)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight',
+                facecolor='white', edgecolor='none')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
 def make_element_diagram(boq: ElementBOQ, dxf_doc=None, dpi: int = 90) -> bytes:
     """
     Generate the best available floor-plan diagram for an element.
@@ -551,6 +709,10 @@ def make_element_diagram(boq: ElementBOQ, dxf_doc=None, dpi: int = 90) -> bytes:
     if is_complex:
         return make_polygon_diagram(poly_pts, label=el.label, boq=boq, dpi=dpi)
 
-    # ── 3. Rectangle diagram ───────────────────────────────────────────────────
+    # ── 3. Face-panel layout diagram (rectangular columns & shear walls) ───────
+    if getattr(boq, 'face_panels', None):
+        return make_face_panel_diagram(boq, dpi=dpi)
+
+    # ── 4. Plain rectangle diagram ─────────────────────────────────────────────
     return make_rect_diagram(el.length_mm, el.width_mm,
                              label=el.label, boq=boq, dpi=dpi)
