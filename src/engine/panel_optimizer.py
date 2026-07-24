@@ -781,12 +781,44 @@ def optimize_polygon_element(
     return boq
 
 
+def _compute_polygon_sw_boq(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
+    """
+    BOQ for a complex polygon-shaped shear wall.
+
+    Uses the actual polygon vertices stored in element.polygon_pts to enumerate
+    every face (edge) of the cross-section and compute net flat-panel lengths after
+    IC corner deductions.  OC and IC panel counts come from the vertex classification.
+    """
+    poly_pts = element.polygon_pts or []
+
+    # Lazy import to avoid circular dependency (dwg_parser ← models ← panel_optimizer)
+    try:
+        from src.parsers.dwg_parser import (
+            _classify_polygon_corners as _cpg_c,
+            _compute_polygon_face_nets  as _cpg_fn,
+        )
+        corners  = _cpg_c(poly_pts)
+        face_nets = _cpg_fn(poly_pts, corners)
+    except Exception:
+        # Fallback: treat as plain rectangular element
+        return optimize_column(element, panel_height_mm)
+
+    oc_count = corners.count('OC80')
+    ic_count = corners.count('IC100')
+
+    boq = optimize_polygon_element(element, face_nets, oc_count, ic_count, panel_height_mm)
+    return boq
+
+
 def compute_boq(element: StructuralElement, panel_height_mm: float = 3200) -> ElementBOQ:
     """Main entry: compute BOQ for any element type."""
     if element.is_column or element.is_monolithic:
         return optimize_column(element, panel_height_mm)
     elif element.element_type == ElementType.SHEAR_WALL:
-        return optimize_column(element, panel_height_mm)  # 4-face treatment like column
+        poly = getattr(element, 'polygon_pts', None) or []
+        if len(poly) > 4:
+            return _compute_polygon_sw_boq(element, panel_height_mm)
+        return optimize_column(element, panel_height_mm)  # rect SW → 4-face treatment
     elif element.is_wall:
         return optimize_wall(element, panel_height_mm)
     elif element.is_box_culvert:
