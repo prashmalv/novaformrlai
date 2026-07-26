@@ -1899,19 +1899,38 @@ def parse_nova_shear_walls(
     poly_label: dict = {}   # index in sig_polys → label string
     poly_dist:  dict = {}   # index → matched distance (for rescue-pass tie-break)
 
-    for pi, poly in enumerate(sig_polys):
-        best_label, best_dist = None, LABEL_SEARCH_R
+    # Multi-floor drawings stack floor plans vertically in the same DXF.
+    # Labels placed near the top/bottom of their element can end up closer
+    # to the centroid of an element on an adjacent floor, causing swaps
+    # (e.g. SW8↔SW10, SW9↔SW14).  Fix: prefer labels within Y_BAND_MM of
+    # the polygon centroid (same-floor band); fall back to full radius only
+    # when no label is found in the band.
+    Y_BAND_MM = 2000  # mm — labels within this Y-distance are "same floor"
+
+    def _best_label_in_radius(poly, max_r, y_band=None):
+        """Return (best_label, best_dist) for labels within max_r.
+        If y_band is set, only consider labels within ±y_band in Y."""
+        bl, bd = None, max_r
         for lx, ly, ltxt in label_positions:
             if not _SW_LABEL_RE.match(ltxt):
                 continue
             lbl_up = ltxt.upper()
-            # Skip labels not in schedule if schedule info is available
             if _sched_labels and lbl_up not in _sched_labels:
                 continue
+            if y_band is not None and abs(poly['cy'] - ly) > y_band:
+                continue
             d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
-            if d < best_dist:
-                best_dist = d
-                best_label = lbl_up
+            if d < bd:
+                bd = d
+                bl = lbl_up
+        return bl, bd
+
+    for pi, poly in enumerate(sig_polys):
+        # Phase 1: restrict to same-floor Y-band to avoid cross-floor swaps
+        best_label, best_dist = _best_label_in_radius(poly, LABEL_SEARCH_R, Y_BAND_MM)
+        # Phase 2: fallback — no label in Y-band, use full radius
+        if best_label is None:
+            best_label, best_dist = _best_label_in_radius(poly, LABEL_SEARCH_R, None)
         if best_label:
             poly_label[pi] = best_label
             poly_dist[pi]  = best_dist
@@ -2006,15 +2025,30 @@ def parse_nova_shear_walls(
 
         for lbl in ap_plan_labels:
             best_pi, best_dist = None, LABEL_SEARCH_R * 2
+            # Phase 1: prefer rescue candidates within same Y-band
             for lx, ly, ltxt in label_positions:
                 if ltxt.upper() != lbl:
                     continue
                 for pi in rescue_candidates:
                     poly = sig_polys[pi]
+                    if abs(poly['cy'] - ly) > Y_BAND_MM:
+                        continue
                     d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
                     if d < best_dist:
                         best_dist = d
                         best_pi = pi
+            # Phase 2: fallback to full radius if Y-band produced no match
+            if best_pi is None:
+                best_dist = LABEL_SEARCH_R * 2
+                for lx, ly, ltxt in label_positions:
+                    if ltxt.upper() != lbl:
+                        continue
+                    for pi in rescue_candidates:
+                        poly = sig_polys[pi]
+                        d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
+                        if d < best_dist:
+                            best_dist = d
+                            best_pi = pi
             if best_pi is not None:
                 # Only rescue if this polygon's shape (W×H) doesn't already exist
                 # among ANY other polygon in poly_label — prevents assigning a stray
