@@ -1838,9 +1838,24 @@ def parse_nova_shear_walls(
         if ent.dxftype() != 'LWPOLYLINE':
             continue
         try:
-            if not ent.is_closed:
-                continue
             pts = [(p[0], p[1]) for p in ent.get_points()]
+            if len(pts) < 4:
+                continue
+            is_closed = ent.is_closed
+            if not is_closed:
+                # Some DXF authoring tools close a loop by repeating the first
+                # vertex as the last point instead of setting the LWPOLYLINE
+                # "closed" flag. Treat that as closed too -- otherwise a real
+                # wall/column drawn this way is silently invisible to every
+                # downstream matching step (it never becomes a candidate at
+                # all, regardless of label logic).
+                _dx = pts[0][0] - pts[-1][0]
+                _dy = pts[0][1] - pts[-1][1]
+                if (_dx * _dx + _dy * _dy) ** 0.5 < 1.0:
+                    is_closed = True
+                    pts = pts[:-1]  # drop the duplicated closing vertex
+            if not is_closed:
+                continue
             if len(pts) < 4:
                 continue
             xs = [p[0] for p in pts]
@@ -1886,7 +1901,8 @@ def parse_nova_shear_walls(
     # from stealing polygons that belong to schedule elements.
     LABEL_SEARCH_R = 8000   # mm — max label-to-centroid distance
 
-    # Build schedule label set to filter out stray labels like SW14
+    # Build schedule label set to filter out stray non-element text (grid refs,
+    # dimension callouts, etc.) that happens to match the label pattern.
     _sched_labels: set = set()
     _sched_tbl_local: dict = {}
     if doc is not None:
@@ -1895,6 +1911,128 @@ def parse_nova_shear_walls(
             _sched_labels = set(_sched_tbl_local.keys())
         except Exception:
             pass
+    # A label can legitimately appear in the plan view with NO row in the
+    # schedule table at all (e.g. the schedule only defines "SW5 TO SW11" but
+    # the plan also has a genuinely-drawn SW14). Excluding such labels here
+    # would make their own text invisible to every matching phase below,
+    # so their rightful polygon silently gets absorbed by the nearest label
+    # that IS in the schedule instead (e.g. SW14's wall reported as SW9).
+    # Any label found in the plan area (already schedule-region-filtered via
+    # _plan_label_cnt) is therefore also treated as eligible, exactly like an
+    # AS_PER_PLAN schedule entry: its own polygon geometry is authoritative.
+    _sched_labels |= (set(_plan_label_cnt.keys()) - _sched_labels)
+
+    # ── Multi-entity merged-shape detection ─────────────────────────────────
+    # Some Nova drawings represent one complex/stepped wall (e.g. SW10, a
+    # multi-segment Z/step-shaped run) as TWO OR MORE separate OPEN
+    # LWPOLYLINE entities whose endpoints connect end-to-end into one closed
+    # loop, rather than a single LWPOLYLINE. Such a wall is invisible to the
+    # whole-polygon matching above (which only looks at genuine LWPOLYLINE
+    # entities), so it never becomes a candidate at all.
+    #
+    # Detect such chains and, only where the WHOLE merged loop is a label's
+    # best available match (strictly closer than any ordinary candidate
+    # polygon already in sig_polys), add the complete merged loop as a
+    # normal candidate polygon. It then goes through the exact same
+    # corner-classification / face-net / panel-optimizer pipeline as any
+    # other multi-vertex AS_PER_PLAN wall (e.g. SW5-SW7, SW9, SW11) -- no
+    # edges are discarded, so the full shape (and its full panel
+    # distribution) is preserved, not just one face of it.
+    #
+    # The "only if strictly better" guard is what keeps this safe: a label
+    # that already has a correct, closer whole-polygon match elsewhere
+    # (e.g. SW8, which merely sits incidentally near this same merged loop)
+    # is never redirected here.
+    def _pt_eq(p1, p2):
+        return math.hypot(p1[0] - p2[0], p1[1] - p2[1]) < 1.0
+
+    _open_ents: list = []
+    for ent in msp:
+        if ent.dxftype() != 'LWPOLYLINE' or ent.is_closed:
+            continue
+        _layer_up = ent.dxf.layer.upper()
+        if 'DIM' in _layer_up or 'GRID' in _layer_up:
+            continue  # dimension/grid lines are never structural wall outlines
+        try:
+            _pts = [(p[0], p[1]) for p in ent.get_points()]
+            if len(_pts) < 2 or _pt_eq(_pts[0], _pts[-1]):
+                continue  # too short, or self-closing (handled earlier already)
+            _open_ents.append({'pts': _pts, 'layer': ent.dxf.layer})
+        except Exception:
+            continue
+
+    _used_open: set = set()
+    _merged_loops: list = []
+    for _i, _o in enumerate(_open_ents):
+        if _i in _used_open:
+            continue
+        _chain = [_o]
+        _chain_idx = {_i}
+        _cur_end = _o['pts'][-1]
+        _start_pt = _o['pts'][0]
+        _guard = 0
+        while not _pt_eq(_cur_end, _start_pt) and _guard < 10:
+            _guard += 1
+            _found = None
+            for _j, _o2 in enumerate(_open_ents):
+                if _j in _chain_idx or _j in _used_open or _o2['layer'] != _o['layer']:
+                    continue
+                if _pt_eq(_o2['pts'][0], _cur_end):
+                    _found = _o2['pts']
+                    break
+                if _pt_eq(_o2['pts'][-1], _cur_end):
+                    _found = list(reversed(_o2['pts']))
+                    break
+                _j = None
+            if _found is None:
+                break
+            _chain.append({'pts': _found})
+            _chain_idx.add(_j)
+            _cur_end = _found[-1]
+        if _pt_eq(_cur_end, _start_pt) and len(_chain) >= 2:
+            _merged_pts = list(_chain[0]['pts'])
+            for _c in _chain[1:]:
+                _merged_pts.extend(_c['pts'][1:])
+            _merged_pts = _merged_pts[:-1]  # drop final point (== first point)
+            _mxs = [p[0] for p in _merged_pts]; _mys = [p[1] for p in _merged_pts]
+            if (max(_mxs) - min(_mxs)) >= 150 and (max(_mys) - min(_mys)) >= 150:
+                _merged_loops.append(_merged_pts)
+            _used_open |= _chain_idx
+
+    for _mpts in _merged_loops:
+        _n = len(_mpts)
+        _mcx = sum(p[0] for p in _mpts) / _n
+        _mcy = sum(p[1] for p in _mpts) / _n
+
+        _near_labels = [(lx, ly, lt.upper()) for lx, ly, lt in label_positions
+                        if _SW_LABEL_RE.match(lt)
+                        and (not _sched_labels or lt.upper() in _sched_labels)
+                        and math.hypot(lx - _mcx, ly - _mcy) < LABEL_SEARCH_R]
+        if not _near_labels:
+            continue
+
+        # Find the label this WHOLE merged loop is nearest to (by centroid).
+        _lx, _ly, _ = min(_near_labels, key=lambda t: math.hypot(t[0] - _mcx, t[1] - _mcy))
+        _loop_d = math.hypot(_lx - _mcx, _ly - _mcy)
+
+        # Only accept if this loop beats that label's best ORDINARY candidate
+        # -- otherwise the label already has a closer, correct home elsewhere
+        # (e.g. SW8, which sits incidentally near this same merged loop).
+        _best_normal_d = LABEL_SEARCH_R
+        for _poly in sig_polys:
+            _dd = math.sqrt((_poly['cx'] - _lx) ** 2 + (_poly['cy'] - _ly) ** 2)
+            if _dd < _best_normal_d:
+                _best_normal_d = _dd
+        if _loop_d >= _best_normal_d:
+            continue
+
+        _mxs = [p[0] for p in _mpts]; _mys = [p[1] for p in _mpts]
+        sig_polys.append({
+            'pts': _mpts,
+            'cx': _mcx, 'cy': _mcy,
+            'w': max(_mxs) - min(_mxs), 'h': max(_mys) - min(_mys),
+            'npts': _n,
+        })
 
     poly_label: dict = {}   # index in sig_polys → label string
     poly_dist:  dict = {}   # index → matched distance (for rescue-pass tie-break)
@@ -2024,31 +2162,26 @@ def parse_nova_shear_walls(
         rescue_candidates = unclaimed | multi_claimed
 
         for lbl in ap_plan_labels:
+            # Search all rescue candidates within LABEL_SEARCH_R*2, unrestricted
+            # by Y-band. A Y-band-first pass was tried here previously, but it
+            # let a near (same-floor) but WRONG-shape candidate (e.g. a small
+            # column) win over the correct wall polygon whenever that wall's
+            # own label happened to sit >Y_BAND_MM from its centroid (a label-
+            # placement offset, not a different floor) -- e.g. SW10 resolving
+            # to a 450x450 column instead of its true 3800x650 wall. The
+            # shape_taken guard below already protects against cross-floor
+            # shape theft, so a plain nearest-candidate search is sufficient
+            # and more reliable here.
             best_pi, best_dist = None, LABEL_SEARCH_R * 2
-            # Phase 1: prefer rescue candidates within same Y-band
             for lx, ly, ltxt in label_positions:
                 if ltxt.upper() != lbl:
                     continue
                 for pi in rescue_candidates:
                     poly = sig_polys[pi]
-                    if abs(poly['cy'] - ly) > Y_BAND_MM:
-                        continue
                     d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
                     if d < best_dist:
                         best_dist = d
                         best_pi = pi
-            # Phase 2: fallback to full radius if Y-band produced no match
-            if best_pi is None:
-                best_dist = LABEL_SEARCH_R * 2
-                for lx, ly, ltxt in label_positions:
-                    if ltxt.upper() != lbl:
-                        continue
-                    for pi in rescue_candidates:
-                        poly = sig_polys[pi]
-                        d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
-                        if d < best_dist:
-                            best_dist = d
-                            best_pi = pi
             if best_pi is not None:
                 # Only rescue if this polygon's shape (W×H) doesn't already exist
                 # among ANY other polygon in poly_label — prevents assigning a stray
