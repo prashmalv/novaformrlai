@@ -726,6 +726,7 @@ def optimize_polygon_element(
     ic_count     : number of concave (IC100) corners in the polygon
     """
     boq = ElementBOQ(element=element)
+    warnings: list[str] = []
     panel_h = int(round(product_height_mm))
     panel_counts: dict = {}
 
@@ -740,11 +741,17 @@ def optimize_polygon_element(
         panel_counts[ic_key] = {'width': _ic(), 'height': panel_h,
                                  'qty': ic_count, 'is_corner': True, 'is_inner': True}
 
-    # Flat panels — fill each face individually using DP
-    for net in face_nets:
+    # Flat panels — fill each face individually using DP. A face whose net
+    # length doesn't divide evenly into the panel catalog leaves a leftover
+    # gap (spacer); every other optimize_* function (e.g. optimize_wall,
+    # used by simple rectangular walls) turns that gap into a fill-plate
+    # (FP) panel entry instead of discarding it -- this brings polygon-shaped
+    # elements (L/T/complex walls) up to the same behavior.
+    spacer_counts: dict = {}
+    for face_i, net in enumerate(face_nets, start=1):
         if net <= 0:
             continue
-        combo, _spacer = find_panel_combination(net)
+        combo, face_spacer = find_panel_combination(net)
         for w, cnt in _count_panels(combo).items():
             key = f"{w}X{panel_h}"
             if key in panel_counts:
@@ -752,6 +759,12 @@ def optimize_polygon_element(
             else:
                 panel_counts[key] = {'width': w, 'height': panel_h,
                                       'qty': cnt, 'is_corner': False, 'is_inner': False}
+        if face_spacer > 0:
+            spacer_key = int(round(face_spacer))
+            spacer_counts[spacer_key] = spacer_counts.get(spacer_key, 0) + 1
+            warnings.append(f"Face {face_i} ({net:.0f}mm): spacer of {spacer_key}mm needed.")
+        elif face_spacer < 0:
+            warnings.append(f"Face {face_i} ({net:.0f}mm): overshoot of {-face_spacer:.0f}mm.")
 
     # Build PanelEntry list: IC first, then OC, then flat panels sorted width desc
     boq.panels = []
@@ -776,6 +789,13 @@ def optimize_polygon_element(
         boq.panels.append(PanelEntry(
             size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty'],
         ))
+
+    # Fill plates ensure: sum(panels) + fill = face_length so the math checks out.
+    for spacer_w, face_count in spacer_counts.items():
+        boq.panels.append(_make_filler_entry(spacer_w, panel_h, face_count=face_count))
+    if spacer_counts:
+        boq.spacer_mm = max(spacer_counts)
+    boq.warnings = warnings
 
     boq.height_note = f"{panel_h}MM"
     return boq
