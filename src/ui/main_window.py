@@ -278,8 +278,64 @@ class AddElementDialog(QDialog):
 
 
 # ---------- Edit BOQ Panels Dialog ----------
+from pathlib import Path
+import openpyxl
 
-_CATALOG_WIDTHS = [600, 500, 490, 440, 400, 350, 340, 300, 275, 250, 240, 230, 200, 150, 125, 100, 40]
+
+def load_catalog_widths():
+    default = [600, 500, 490, 440, 400, 350, 340, 300,
+               275, 250, 240, 230, 200, 150, 125, 100, 40]
+
+    excel_path = (
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "panel_catalog_local.xlsx"
+    )
+
+    print("Panel catalog path:", excel_path)
+
+    if not excel_path.exists():
+        return default
+
+    wb = None
+
+    try:
+        wb = openpyxl.load_workbook(excel_path, data_only=True)
+        ws = wb.active
+
+        # Find Width_mm column
+        headers = [cell.value for cell in ws[1]]
+        if "Width_mm" not in headers:
+            return default
+
+        width_col = headers.index("Width_mm")
+
+        widths = []
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            value = row[width_col]
+            if value is not None:
+                widths.append(int(value))
+
+        print("Catalog values:", widths)
+
+        if widths:
+            return sorted(set(widths), reverse=True)
+
+        return default
+
+    except Exception as ex:
+        print(f"Unable to load panel catalog: {ex}")
+        return default
+
+    finally:
+        if wb is not None:
+            wb.close()
+
+
+def get_catalog_widths():
+    return load_catalog_widths()
+#_CATALOG_WIDTHS = [600, 500, 490, 440, 400, 350, 340, 300, 275, 250, 240, 230, 200, 150, 125, 100, 40]
 
 class EditBOQPanelsDialog(QDialog):
     """
@@ -333,7 +389,9 @@ class EditBOQPanelsDialog(QDialog):
 
         self._add_width_combo = QComboBox()
         self._add_width_combo.addItem("OC80 (Corner)")
-        for w in _CATALOG_WIDTHS:
+        # for w in _CATALOG_WIDTHS:
+        #     self._add_width_combo.addItem(f"{w} mm")
+        for w in get_catalog_widths():
             self._add_width_combo.addItem(f"{w} mm")
         add_row.addWidget(self._add_width_combo)
 
