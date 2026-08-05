@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QScrollArea, QTextEdit, QSplitter,
     QHeaderView, QFrame, QSizePolicy, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QEvent, QTimer
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
 
 from src.models.element import (
@@ -1480,6 +1480,26 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._apply_global_style()
+    # ------------- Manoj code start ---------------------------------------
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            QTimer.singleShot(0, self._force_full_repaint)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._force_full_repaint)
+
+    def _force_full_repaint(self):
+        central = self.centralWidget()
+        if central is not None:
+            layout = central.layout()
+            if layout is not None:
+                layout.activate()
+            central.updateGeometry()
+            central.update()
+        self.repaint()
+    # -------------------manoj code end ---------------------------------------
 
     def _apply_global_style(self):
         self.setStyleSheet(f"""
@@ -1658,26 +1678,32 @@ class MainWindow(QMainWindow):
         form.setSpacing(10)
 
         self.project_name_edit = QLineEdit()
+        self.project_name_edit.setMaxLength(50)  # add by manoj  
         self.project_name_edit.setPlaceholderText("e.g. Commercial Complex - Sector 42")
         form.addRow("Project Name:", self.project_name_edit)
 
         self.client_name_edit = QLineEdit()
+        self.client_name_edit.setMaxLength(50)   # add by manoj
         self.client_name_edit.setPlaceholderText("Client company name")
         form.addRow("Client Name:", self.client_name_edit)
 
         self.client_addr_edit = QLineEdit()
+        self.client_addr_edit.setMaxLength(50)
         self.client_addr_edit.setPlaceholderText("Client address")
         form.addRow("Client Address:", self.client_addr_edit)
 
         self.ipo_edit = QLineEdit()
+        self.ipo_edit.setMaxLength(10)
         self.ipo_edit.setPlaceholderText("IPO Number (if any)")
         form.addRow("IPO No:", self.ipo_edit)
 
         self.boq_number_edit = QLineEdit()
+        self.boq_number_edit.setMaxLength(10)
         self.boq_number_edit.setPlaceholderText("e.g. BOQ-2025-001 (auto-generated if blank)")
         form.addRow("BOQ Number:", self.boq_number_edit)
 
         self.qtn_number_edit = QLineEdit()
+        self.qtn_number_edit.setMaxLength(10)
         self.qtn_number_edit.setPlaceholderText("e.g. QTN-2025-001 (auto-generated if blank)")
         form.addRow("Quotation Number:", self.qtn_number_edit)
 
@@ -2220,6 +2246,11 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(12)
+        # Every widget below keeps its real minimum size — if the tab area
+        # is ever shorter than the content needs (e.g. after a maximize/DPI
+        # change that under-reports available height), the QScrollArea this
+        # widget gets wrapped in at the bottom of this function will scroll
+        # instead of Qt silently squeezing/overlapping the buttons.
 
         lbl = QLabel("Export & Output")
         lbl.setStyleSheet(HEADER_STYLE)
@@ -2358,7 +2389,13 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.export_log)
 
         lay.addStretch()
-        return w
+        # --------------------------- mnoj code start -----------------
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setWidget(w)
+        return scroll
+    # --------------------------- manoj code end --------------------------
 
     # ====================================================
     # LOGIC
