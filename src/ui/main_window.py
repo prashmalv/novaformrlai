@@ -1742,17 +1742,17 @@ class MainWindow(QMainWindow):
         form.setSpacing(10)
 
         self.project_name_edit = QLineEdit()
-        self.project_name_edit.setMaxLength(50)  # add by manoj  
+        self.project_name_edit.setMaxLength(100)  # add by manoj  
         self.project_name_edit.setPlaceholderText("e.g. Commercial Complex - Sector 42")
         form.addRow("Project Name:", self.project_name_edit)
 
         self.client_name_edit = QLineEdit()
-        self.client_name_edit.setMaxLength(50)   # add by manoj
+        self.client_name_edit.setMaxLength(100)   # add by manoj
         self.client_name_edit.setPlaceholderText("Client company name")
         form.addRow("Client Name:", self.client_name_edit)
 
         self.client_addr_edit = QLineEdit()
-        self.client_addr_edit.setMaxLength(50)
+        self.client_addr_edit.setMaxLength(100)
         self.client_addr_edit.setPlaceholderText("Client address")
         form.addRow("Client Address:", self.client_addr_edit)
 
