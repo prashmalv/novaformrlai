@@ -278,6 +278,7 @@ class AddElementDialog(QDialog):
 
 
 # ---------- Edit BOQ Panels Dialog ----------
+
 from pathlib import Path
 import openpyxl
 
@@ -292,18 +293,16 @@ def load_catalog_widths():
         / "panel_catalog_local.xlsx"
     )
 
-    print("Panel catalog path:", excel_path)
-
     if not excel_path.exists():
         return default
 
     wb = None
+    result = default  # single, guaranteed fallback
 
     try:
         wb = openpyxl.load_workbook(excel_path, data_only=True)
         ws = wb.active
 
-        # Find Width_mm column
         headers = [cell.value for cell in ws[1]]
         if "Width_mm" not in headers:
             return default
@@ -311,30 +310,37 @@ def load_catalog_widths():
         width_col = headers.index("Width_mm")
 
         widths = []
-
         for row in ws.iter_rows(min_row=2, values_only=True):
             value = row[width_col]
             if value is not None:
-                widths.append(int(value))
+                try:
+                    widths.append(int(value))
+                except (TypeError, ValueError):
+                    # skip malformed cells instead of crashing the whole load
+                    continue
 
         print("Catalog values:", widths)
 
         if widths:
-            return sorted(set(widths), reverse=True)
-
-        return default
+            result = sorted(set(widths), reverse=True)
+        # if widths is empty, result stays as `default`
 
     except Exception as ex:
-        print(f"Unable to load panel catalog: {ex}")
-        return default
+        #print(f"Unable to load panel catalog: {ex}")
+        result = default
 
     finally:
+        # single, guaranteed close point regardless of how we got here
         if wb is not None:
             wb.close()
+
+    return result
 
 
 def get_catalog_widths():
     return load_catalog_widths()
+
+
 #_CATALOG_WIDTHS = [600, 500, 490, 440, 400, 350, 340, 300, 275, 250, 240, 230, 200, 150, 125, 100, 40]
 
 class EditBOQPanelsDialog(QDialog):
