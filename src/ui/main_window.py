@@ -319,8 +319,6 @@ def load_catalog_widths():
                     # skip malformed cells instead of crashing the whole load
                     continue
 
-        print("Catalog values:", widths)
-
         if widths:
             result = sorted(set(widths), reverse=True)
         # if widths is empty, result stays as `default`
