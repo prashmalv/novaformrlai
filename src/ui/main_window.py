@@ -1545,24 +1545,24 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._apply_global_style()
     # ------------- Manoj code start ---------------------------------------
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange:
-            QTimer.singleShot(0, self._force_full_repaint)
+    # def changeEvent(self, event):
+    #     super().changeEvent(event)
+    #     if event.type() == QEvent.Type.WindowStateChange:
+    #         QTimer.singleShot(0, self._force_full_repaint)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        QTimer.singleShot(0, self._force_full_repaint)
+    # def resizeEvent(self, event):
+    #     super().resizeEvent(event)
+    #     QTimer.singleShot(0, self._force_full_repaint)
 
-    def _force_full_repaint(self):
-        central = self.centralWidget()
-        if central is not None:
-            layout = central.layout()
-            if layout is not None:
-                layout.activate()
-            central.updateGeometry()
-            central.update()
-        self.repaint()
+    # def _force_full_repaint(self):
+    #     central = self.centralWidget()
+    #     if central is not None:
+    #         layout = central.layout()
+    #         if layout is not None:
+    #             layout.activate()
+    #         central.updateGeometry()
+    #         central.update()
+    #     self.repaint()
     # -------------------manoj code end ---------------------------------------
 
     def _apply_global_style(self):
@@ -2453,12 +2453,13 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.export_log)
 
         lay.addStretch()
+        return w
         # --------------------------- mnoj code start -----------------
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        scroll.setWidget(w)
-        return scroll
+        # scroll = QScrollArea()
+        # scroll.setWidgetResizable(True)
+        # scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        # scroll.setWidget(w)
+        # return scroll
     # --------------------------- manoj code end --------------------------
 
     # ====================================================
