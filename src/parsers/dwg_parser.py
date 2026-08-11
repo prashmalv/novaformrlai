@@ -1735,7 +1735,7 @@ def _compute_polygon_face_nets(pts: list, corners: list) -> list:
 
 # Label pattern for structural elements: SW6, C1, W2, etc.
 # _SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$')
-_SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
+_SW_LABEL_RE = re.compile(r'^(?!H-?\d)[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
 
 def _get_schedule_regions(raw_texts_xy: list) -> list:
     """
@@ -2072,7 +2072,7 @@ def parse_nova_shear_walls(
         if best_label:
             poly_label[pi] = best_label
             poly_dist[pi]  = best_dist
-
+    
     # ── Conflict resolution: when multiple polys claim the same label, keep
     #    only those that belong to the DOMINANT shape group.
     #
@@ -2326,7 +2326,8 @@ def _expand_label(label: str) -> list:
     "SW5 TO SW11" → ["SW5","SW6","SW7","SW8","SW9","SW10","SW11"]
     """
     label = label.strip().upper().replace('%%U', '')
-    rm = re.match(r'^([A-Z]+)(\d+)\s+TO\s+[A-Z]*(\d+)([A-Z]?)$', label)
+    # rm = re.match(r'^([A-Z]+)(\d+)\s+TO\s+[A-Z]*(\d+)([A-Z]?)$', label)
+    rm = re.match(r'^(?!H-?\d)([A-Z]+)-?(\d+)\s+TO\s+[A-Z]*-?(\d+)([A-Z]?)$',label)
     if rm:
         prefix = rm.group(1)
         start, end = int(rm.group(2)), int(rm.group(3))
@@ -2335,7 +2336,8 @@ def _expand_label(label: str) -> list:
         parts = [p.strip() for p in label.split(',')]
         result, last_pfx = [], ''
         for p in parts:
-            m2 = re.match(r'^([A-Z]*)(\d+[A-Z]?)$', p)
+            # m2 = re.match(r'^([A-Z]*)(\d+[A-Z]?)$', p)
+            m2 = re.match(r'^(?!H-?\d)([A-Z]*)-?(\d+[A-Z]?)$', p)
             if m2:
                 if m2.group(1):
                     last_pfx = m2.group(1)
@@ -2461,8 +2463,8 @@ def parse_nova_schedule_table(doc) -> dict:
 
             for lbl in _expand_label(label_raw):
                 lbl_up = lbl.upper().strip()
-                # if lbl_up and re.match(r'^[A-Z]+\d', lbl_up):
-                if lbl_up and re.match(r'^[A-Z]+-?\d', lbl_up):
+                # if lbl_up and re.match(r'^[A-Z]+\d', lbl_up):    # regex updated
+                if lbl_up and re.match(r'^(?!H-?\d)[A-Z]+-?\d', lbl_up):
                     result[lbl_up] = value
 
     return result
@@ -2547,7 +2549,8 @@ def parse_nova_full(
     _pnf_cnt = _PNFCtr()
     for _lx, _ly, _lt in _pnf_raw_texts:
         _lt_u = _lt.strip().upper()
-        if re.match(r'^[A-Z]{1,3}\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):
+        # if re.match(r'^[A-Z]{1,3}\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):     regex is updated
+        if re.match(r'^(?!H-?\d)[A-Z]{1,3}-?\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):
             _pnf_cnt[_lt_u] += 1
     _pnf_label_cnt: dict = dict(_pnf_cnt)
 
