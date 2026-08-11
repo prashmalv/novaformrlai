@@ -1734,8 +1734,8 @@ def _compute_polygon_face_nets(pts: list, corners: list) -> list:
 
 
 # Label pattern for structural elements: SW6, C1, W2, etc.
-_SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$')
-
+# _SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$')
+_SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
 
 def _get_schedule_regions(raw_texts_xy: list) -> list:
     """
@@ -2461,7 +2461,8 @@ def parse_nova_schedule_table(doc) -> dict:
 
             for lbl in _expand_label(label_raw):
                 lbl_up = lbl.upper().strip()
-                if lbl_up and re.match(r'^[A-Z]+\d', lbl_up):
+                # if lbl_up and re.match(r'^[A-Z]+\d', lbl_up):
+                if lbl_up and re.match(r'^[A-Z]+-?\d', lbl_up):
                     result[lbl_up] = value
 
     return result
