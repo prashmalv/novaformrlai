@@ -1810,10 +1810,11 @@ def parse_nova_shear_walls(
                 continue
             cleaned = _clean_mtext_full(raw)
             if cleaned:
+                print("label text ", cleaned)
                 label_positions.append((pos.x, pos.y, cleaned))
         except Exception:
             continue
-
+    
     # ── Count plan-area label occurrences (exclude schedule table area) ───────
     # Used as authoritative qty: how many times each label TEXT appears in
     # the plan/drawing area.  Schedule table labels (COLUMN SCHEDULE rows) are
@@ -1874,7 +1875,7 @@ def parse_nova_shear_walls(
             })
         except Exception:
             continue
-
+    print("All sig polygon :", len(sig_polys))
     # Deduplicate identical polygons (same npts + center within 50mm + same size within 50mm).
     # DXF authoring artifacts can place the exact same LWPOLYLINE twice at identical coordinates.
     _seen_poly_keys: set = set()
@@ -1894,7 +1895,7 @@ def parse_nova_shear_walls(
 
     if not sig_polys:
         return [], [], "No structural polylines found (all shapes smaller than 150mm)"
-
+    print("all unique polygon :", len(sig_polys))
     # ── Polygon-first matching (schedule labels only) ─────────────────────
     # Each polygon scans labels and picks the nearest one.
     # Restricting to schedule-only labels prevents stray labels (e.g. SW14)
@@ -1909,6 +1910,7 @@ def parse_nova_shear_walls(
         try:
             _sched_tbl_local = parse_nova_schedule_table(doc)
             _sched_labels = set(_sched_tbl_local.keys())
+            print("Label from schedule table :", _sched_labels)
         except Exception:
             pass
     # A label can legitimately appear in the plan view with NO row in the
@@ -2031,9 +2033,36 @@ def parse_nova_shear_walls(
             'pts': _mpts,
             'cx': _mcx, 'cy': _mcy,
             'w': max(_mxs) - min(_mxs), 'h': max(_mys) - min(_mys),
-            'npts': _n,
+            'npts': _n, 
+        })
+    print("After merge all open polygon ;",len(sig_polys))
+
+    # -------------------- For edge based--------------------------------------------------------------
+
+    sig_polys_with_egde_mid_pt: list = []  # it store pts, w,h npts from sig_polys list
+    
+    for poly in sig_polys:
+        pts = poly['pts']
+        n = poly['npts']
+
+        edge_mid_pts = []
+        for i in range(n - 1):  # consecutive points only — these are open polylines, no wrap-around edge
+            x1, y1 = pts[i]
+            x2, y2 = pts[i + 1]
+            mid_x = (x1 + x2) / 2
+            mid_y = (y1 + y2) / 2
+            edge_mid_pts.append((mid_x, mid_y))
+
+        sig_polys_with_egde_mid_pt.append({
+            'pts': pts,
+            'w': poly['w'],
+            'h': poly['h'],
+            'npts': n,
+            'edge_mid_pts': edge_mid_pts,
         })
 
+    
+    # -------------------- For edge based- end-------------------------------------------------------------
     poly_label: dict = {}   # index in sig_polys → label string
     poly_dist:  dict = {}   # index → matched distance (for rescue-pass tie-break)
 
@@ -2043,35 +2072,67 @@ def parse_nova_shear_walls(
     # (e.g. SW8↔SW10, SW9↔SW14).  Fix: prefer labels within Y_BAND_MM of
     # the polygon centroid (same-floor band); fall back to full radius only
     # when no label is found in the band.
-    Y_BAND_MM = 2000  # mm — labels within this Y-distance are "same floor"
-
-    def _best_label_in_radius(poly, max_r, y_band=None):
-        """Return (best_label, best_dist) for labels within max_r.
-        If y_band is set, only consider labels within ±y_band in Y."""
-        bl, bd = None, max_r
+    # Y_BAND_MM = 2000  # mm — labels within this Y-distance are "same floor"
+    # -----------------------------------------------------------------------------------
+    def _best_label_in_radius(poly):
+        bl, bd = None, None
         for lx, ly, ltxt in label_positions:
+            # verify label pattern
             if not _SW_LABEL_RE.match(ltxt):
                 continue
             lbl_up = ltxt.upper()
+            # check label in or not in schedule table
             if _sched_labels and lbl_up not in _sched_labels:
                 continue
-            if y_band is not None and abs(poly['cy'] - ly) > y_band:
-                continue
-            d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
-            if d < bd:
+
+            # compute minimum distance between this label and any edge midpoint of poly
+            d = min(
+                math.sqrt((mid_x - lx) ** 2 + (mid_y - ly) ** 2)
+                for mid_x, mid_y in poly['edge_mid_pts']
+            )
+
+            if bd is None or d < bd:
                 bd = d
                 bl = lbl_up
         return bl, bd
 
-    for pi, poly in enumerate(sig_polys):
-        # Phase 1: restrict to same-floor Y-band to avoid cross-floor swaps
-        best_label, best_dist = _best_label_in_radius(poly, LABEL_SEARCH_R, Y_BAND_MM)
-        # Phase 2: fallback — no label in Y-band, use full radius
-        if best_label is None:
-            best_label, best_dist = _best_label_in_radius(poly, LABEL_SEARCH_R, None)
+    for pi, poly in enumerate(sig_polys_with_egde_mid_pt):
+        best_label, best_dist = _best_label_in_radius(poly)
         if best_label:
             poly_label[pi] = best_label
             poly_dist[pi]  = best_dist
+
+    print("poly labels :", poly_label)
+    # ----------------------------------------------------------------------------------------
+    # def _best_label_in_radius(poly, max_r, y_band=None):
+    #     """Return (best_label, best_dist) for labels within max_r.
+    #     If y_band is set, only consider labels within ±y_band in Y."""
+    #     bl, bd = None, max_r
+    #     for lx, ly, ltxt in label_positions:
+    #         if not _SW_LABEL_RE.match(ltxt):
+    #             continue
+    #         lbl_up = ltxt.upper()
+    #         if _sched_labels and lbl_up not in _sched_labels:
+    #             continue
+    #         if y_band is not None and abs(poly['cy'] - ly) > y_band:
+    #             continue
+    #         d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
+    #         if d < bd:
+    #             bd = d
+    #             bl = lbl_up
+    #     return bl, bd
+
+    # for pi, poly in enumerate(sig_polys):
+    #     # Phase 1: restrict to same-floor Y-band to avoid cross-floor swaps
+    #     best_label, best_dist = _best_label_in_radius(poly, LABEL_SEARCH_R, Y_BAND_MM)
+    #     # Phase 2: fallback — no label in Y-band, use full radius
+    #     if best_label is None:
+    #         best_label, best_dist = _best_label_in_radius(poly, LABEL_SEARCH_R, None)
+    #     if best_label:
+    #         poly_label[pi] = best_label
+    #         poly_dist[pi]  = best_dist
+    # print("poly labels :", poly_label)
+
     
     # ── Conflict resolution: when multiple polys claim the same label, keep
     #    only those that belong to the DOMINANT shape group.
