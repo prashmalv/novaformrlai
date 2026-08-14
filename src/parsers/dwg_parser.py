@@ -1771,8 +1771,8 @@ def parse_nova_shear_walls(
       3. Compute per-face net lengths (IC deducts 100 mm each side).
       4. Fill each face with standard panels (DP optimiser).
 
-    Matches each SIGNIFICANT polyline to the nearest label (not vice-versa) to
-    handle drawings where the same label appears many times (repeated floors).
+    Matches each plan label occurrence to a unique polygon using global
+    minimum label-to-polygon-edge distance.
 
     Returns:
         elements : list[StructuralElement]
@@ -1810,7 +1810,6 @@ def parse_nova_shear_walls(
                 continue
             cleaned = _clean_mtext_full(raw)
             if cleaned:
-                print("label text ", cleaned)
                 label_positions.append((pos.x, pos.y, cleaned))
         except Exception:
             continue
@@ -1834,7 +1833,8 @@ def parse_nova_shear_walls(
     _plan_label_cnt = dict(_raw_cnt)
 
     # ── Collect all significant closed polylines ───────────────────────────
-    sig_polys: list = []  # dict with pts, cx, cy, w, h, npts
+
+    sig_polys: list = []  # dict with points, bounding-box metadata, and vertex count
     for ent in msp:
         if ent.dxftype() != 'LWPOLYLINE':
             continue
@@ -1852,7 +1852,7 @@ def parse_nova_shear_walls(
                 # all, regardless of label logic).
                 _dx = pts[0][0] - pts[-1][0]
                 _dy = pts[0][1] - pts[-1][1]
-                if (_dx * _dx + _dy * _dy) ** 0.5 < 1.0:
+                if (_dx * _dx + _dy * _dy) ** 0.5 < 155.0:
                     is_closed = True
                     pts = pts[:-1]  # drop the duplicated closing vertex
             if not is_closed:
@@ -1865,13 +1865,15 @@ def parse_nova_shear_walls(
             h = max(ys) - min(ys)
             if w < 150 or h < 150:
                 continue  # skip annotation boxes / dimension lines
-            cx = (max(xs) + min(xs)) / 2
-            cy = (max(ys) + min(ys)) / 2
             sig_polys.append({
                 'pts': pts,
-                'cx': cx, 'cy': cy,
-                'w': w, 'h': h,
+                'w': w,
+                'h': h,
                 'npts': len(pts),
+                'min_x': min(xs),
+                'max_x': max(xs),
+                'min_y': min(ys),
+                'max_y': max(ys),
             })
         except Exception:
             continue
@@ -1883,10 +1885,10 @@ def parse_nova_shear_walls(
     for _p in sig_polys:
         _key = (
             _p['npts'],
-            round(_p['cx'] / 50),
-            round(_p['cy'] / 50),
-            round(_p['w'] / 50),
-            round(_p['h'] / 50),
+            round(_p['min_x'] / 50),
+            round(_p['max_x'] / 50),
+            round(_p['min_y'] / 50),
+            round(_p['max_y'] / 50),
         )
         if _key not in _seen_poly_keys:
             _seen_poly_keys.add(_key)
@@ -1896,12 +1898,6 @@ def parse_nova_shear_walls(
     if not sig_polys:
         return [], [], "No structural polylines found (all shapes smaller than 150mm)"
     print("all unique polygon :", len(sig_polys))
-    # ── Polygon-first matching (schedule labels only) ─────────────────────
-    # Each polygon scans labels and picks the nearest one.
-    # Restricting to schedule-only labels prevents stray labels (e.g. SW14)
-    # from stealing polygons that belong to schedule elements.
-    LABEL_SEARCH_R = 8000   # mm — max label-to-centroid distance
-
     # Build schedule label set to filter out stray non-element text (grid refs,
     # dimension callouts, etc.) that happens to match the label pattern.
     _sched_labels: set = set()
@@ -1923,6 +1919,42 @@ def parse_nova_shear_walls(
     # _plan_label_cnt) is therefore also treated as eligible, exactly like an
     # AS_PER_PLAN schedule entry: its own polygon geometry is authoritative.
     _sched_labels |= (set(_plan_label_cnt.keys()) - _sched_labels)
+
+    def _point_to_segment_distance(px, py, x1, y1, x2, y2):
+        dx = x2 - x1
+        dy = y2 - y1
+        seg_len_sq = dx * dx + dy * dy
+
+        if seg_len_sq <= 1e-12:
+            return math.hypot(px - x1, py - y1)
+
+        t = ((px - x1) * dx + (py - y1) * dy) / seg_len_sq
+        t = max(0.0, min(1.0, t))
+
+        closest_x = x1 + t * dx
+        closest_y = y1 + t * dy
+
+        return math.hypot(px - closest_x, py - closest_y)
+
+    def _label_to_polygon_edge_distance(lx, ly, poly):
+        pts = poly['pts']
+        n = len(pts)
+        best_dist = float('inf')
+
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+
+            d = _point_to_segment_distance(
+                lx, ly,
+                x1, y1,
+                x2, y2,
+            )
+
+            if d < best_dist:
+                best_dist = d
+
+        return best_dist
 
     # ── Multi-entity merged-shape detection ─────────────────────────────────
     # Some Nova drawings represent one complex/stepped wall (e.g. SW10, a
@@ -2003,294 +2035,109 @@ def parse_nova_shear_walls(
 
     for _mpts in _merged_loops:
         _n = len(_mpts)
-        _mcx = sum(p[0] for p in _mpts) / _n
-        _mcy = sum(p[1] for p in _mpts) / _n
+        _mxs = [p[0] for p in _mpts]
+        _mys = [p[1] for p in _mpts]
 
-        _near_labels = [(lx, ly, lt.upper()) for lx, ly, lt in label_positions
-                        if _SW_LABEL_RE.match(lt)
-                        and (not _sched_labels or lt.upper() in _sched_labels)
-                        and math.hypot(lx - _mcx, ly - _mcy) < LABEL_SEARCH_R]
+        def _merged_edge_distance(lx, ly):
+            best = float('inf')
+
+            for _i in range(_n):
+                _x1, _y1 = _mpts[_i]
+                _x2, _y2 = _mpts[(_i + 1) % _n]
+
+                _d = _point_to_segment_distance(
+                    lx, ly,
+                    _x1, _y1,
+                    _x2, _y2,
+                )
+
+                if _d < best:
+                    best = _d
+
+            return best
+
+        _near_labels = [
+            (lx, ly, lt.upper())
+            for lx, ly, lt in label_positions
+            if _SW_LABEL_RE.match(lt)
+            and (not _sched_labels or lt.upper() in _sched_labels)
+        ]
+
         if not _near_labels:
             continue
 
-        # Find the label this WHOLE merged loop is nearest to (by centroid).
-        _lx, _ly, _ = min(_near_labels, key=lambda t: math.hypot(t[0] - _mcx, t[1] - _mcy))
-        _loop_d = math.hypot(_lx - _mcx, _ly - _mcy)
+        _lx, _ly, _ = min(
+            _near_labels,
+            key=lambda t: _merged_edge_distance(t[0], t[1])
+        )
+        _loop_d = _merged_edge_distance(_lx, _ly)
 
-        # Only accept if this loop beats that label's best ORDINARY candidate
-        # -- otherwise the label already has a closer, correct home elsewhere
-        # (e.g. SW8, which sits incidentally near this same merged loop).
-        _best_normal_d = LABEL_SEARCH_R
+        _best_normal_d = float('inf')
         for _poly in sig_polys:
-            _dd = math.sqrt((_poly['cx'] - _lx) ** 2 + (_poly['cy'] - _ly) ** 2)
+            _dd = _label_to_polygon_edge_distance(_lx, _ly, _poly)
             if _dd < _best_normal_d:
                 _best_normal_d = _dd
+
         if _loop_d >= _best_normal_d:
             continue
 
-        _mxs = [p[0] for p in _mpts]; _mys = [p[1] for p in _mpts]
         sig_polys.append({
             'pts': _mpts,
-            'cx': _mcx, 'cy': _mcy,
-            'w': max(_mxs) - min(_mxs), 'h': max(_mys) - min(_mys),
-            'npts': _n, 
+            'w': max(_mxs) - min(_mxs),
+            'h': max(_mys) - min(_mys),
+            'npts': _n,
+            'min_x': min(_mxs),
+            'max_x': max(_mxs),
+            'min_y': min(_mys),
+            'max_y': max(_mys),
         })
     print("After merge all open polygon ;",len(sig_polys))
 
-    # -------------------- For edge based--------------------------------------------------------------
+    # ── Global label-to-polygon matching ───────────────────────────────────
+    # Match each plan label occurrence to one unique polygon using global
+    # minimum distance from the label point to the actual polygon boundary.
+    # No centroid is used for label matching.
 
-    sig_polys_with_egde_mid_pt: list = []  # it store pts, w,h npts from sig_polys list
-    
-    for poly in sig_polys:
-        pts = poly['pts']
-        n = poly['npts']
+    label_occurrences = []
 
-        edge_mid_pts = []
-        for i in range(n - 1):  # consecutive points only — these are open polylines, no wrap-around edge
-            x1, y1 = pts[i]
-            x2, y2 = pts[i + 1]
-            mid_x = (x1 + x2) / 2
-            mid_y = (y1 + y2) / 2
-            edge_mid_pts.append((mid_x, mid_y))
-
-        sig_polys_with_egde_mid_pt.append({
-            'pts': pts,
-            'w': poly['w'],
-            'h': poly['h'],
-            'npts': n,
-            'edge_mid_pts': edge_mid_pts,
-        })
-
-    
-    # -------------------- For edge based- end-------------------------------------------------------------
-    poly_label: dict = {}   # index in sig_polys → label string
-    poly_dist:  dict = {}   # index → matched distance (for rescue-pass tie-break)
-
-    # Multi-floor drawings stack floor plans vertically in the same DXF.
-    # Labels placed near the top/bottom of their element can end up closer
-    # to the centroid of an element on an adjacent floor, causing swaps
-    # (e.g. SW8↔SW10, SW9↔SW14).  Fix: prefer labels within Y_BAND_MM of
-    # the polygon centroid (same-floor band); fall back to full radius only
-    # when no label is found in the band.
-    # Y_BAND_MM = 2000  # mm — labels within this Y-distance are "same floor"
-    # -----------------------------------------------------------------------------------
-    def _best_label_in_radius(poly):
-        bl, bd = None, None
-        for lx, ly, ltxt in label_positions:
-            # verify label pattern
-            if not _SW_LABEL_RE.match(ltxt):
-                continue
-            lbl_up = ltxt.upper()
-            # check label in or not in schedule table
-            if _sched_labels and lbl_up not in _sched_labels:
-                continue
-
-            # compute minimum distance between this label and any edge midpoint of poly
-            d = min(
-                math.sqrt((mid_x - lx) ** 2 + (mid_y - ly) ** 2)
-                for mid_x, mid_y in poly['edge_mid_pts']
-            )
-
-            if bd is None or d < bd:
-                bd = d
-                bl = lbl_up
-        return bl, bd
-
-    for pi, poly in enumerate(sig_polys_with_egde_mid_pt):
-        best_label, best_dist = _best_label_in_radius(poly)
-        if best_label:
-            poly_label[pi] = best_label
-            poly_dist[pi]  = best_dist
-
-    print("poly labels :", poly_label)
-    # ----------------------------------------------------------------------------------------
-    # def _best_label_in_radius(poly, max_r, y_band=None):
-    #     """Return (best_label, best_dist) for labels within max_r.
-    #     If y_band is set, only consider labels within ±y_band in Y."""
-    #     bl, bd = None, max_r
-    #     for lx, ly, ltxt in label_positions:
-    #         if not _SW_LABEL_RE.match(ltxt):
-    #             continue
-    #         lbl_up = ltxt.upper()
-    #         if _sched_labels and lbl_up not in _sched_labels:
-    #             continue
-    #         if y_band is not None and abs(poly['cy'] - ly) > y_band:
-    #             continue
-    #         d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
-    #         if d < bd:
-    #             bd = d
-    #             bl = lbl_up
-    #     return bl, bd
-
-    # for pi, poly in enumerate(sig_polys):
-    #     # Phase 1: restrict to same-floor Y-band to avoid cross-floor swaps
-    #     best_label, best_dist = _best_label_in_radius(poly, LABEL_SEARCH_R, Y_BAND_MM)
-    #     # Phase 2: fallback — no label in Y-band, use full radius
-    #     if best_label is None:
-    #         best_label, best_dist = _best_label_in_radius(poly, LABEL_SEARCH_R, None)
-    #     if best_label:
-    #         poly_label[pi] = best_label
-    #         poly_dist[pi]  = best_dist
-    # print("poly labels :", poly_label)
-
-    
-    # ── Conflict resolution: when multiple polys claim the same label, keep
-    #    only those that belong to the DOMINANT shape group.
-    #
-    #    Problem: a small element inside a large shear wall can be closer to the
-    #    SW label than the shear wall polygon's own centroid, so it steals the
-    #    label (e.g. a 750×450 column inside SW11 grabs the SW11 label).
-    #
-    #    Fix: for each label, group the claiming polygons by shape similarity
-    #    (within ±15% on both dimensions).  The dominant group is the one with
-    #    the largest total area.  Polygons not in the dominant group are
-    #    discarded (removed from poly_label so they become unclaimed).
-    from collections import defaultdict as _dd2
-    label_to_pis: dict = _dd2(list)
-    for pi, lbl in poly_label.items():
-        label_to_pis[lbl].append(pi)
-
-    for lbl, pis in label_to_pis.items():
-        if len(pis) <= 1:
+    for lx, ly, ltxt in label_positions:
+        if not _SW_LABEL_RE.match(ltxt):
             continue
 
-        polys_for_lbl = [(pi, sig_polys[pi]) for pi in pis]
-        is_ap = _sched_tbl_local.get(lbl) == 'AS_PER_PLAN'
+        lbl_up = ltxt.upper()
 
-        if is_ap:
-            # AS_PER_PLAN → prefer complex polygons (6+ vertices) over rectangles.
-            # A 6-vertex L-shape is the correct element; a 4-vertex rect inside it
-            # is a smaller column that stole the label due to proximity.
-            complex_pis = [pi2 for pi2, p2 in polys_for_lbl if p2['npts'] >= 6]
-            rect_pis    = [pi2 for pi2, p2 in polys_for_lbl if p2['npts'] <  6]
-            outliers = rect_pis if complex_pis else []
-        else:
-            # Explicit dimensions → find the LARGEST cluster of similarly-sized
-            # polys.  Using the largest individual poly as reference fails when a
-            # stray oversized background rect grabs the label; using the cluster
-            # mode finds the real instances even when one outlier is much bigger.
-            def _group_pis_by_size(pis_list):
-                """Return (dominant_group, outlier_group) by size-cluster majority."""
-                if len(pis_list) <= 1:
-                    return pis_list, []
-                # Sort by area ascending so we can use first poly as "seed"
-                pis_sorted = sorted(pis_list,
-                                    key=lambda p: sig_polys[p]['w'] * sig_polys[p]['h'])
-                best_group, best_outliers = [], pis_sorted  # fallback
-                # Try each poly as the cluster seed; keep the seed that captures most
-                for seed_pi in pis_sorted:
-                    sw = sig_polys[seed_pi]['w']
-                    sh = sig_polys[seed_pi]['h']
-                    grp, out = [], []
-                    for p in pis_sorted:
-                        pw = sig_polys[p]['w']; ph = sig_polys[p]['h']
-                        if (abs(pw - sw) <= sw * 0.15 and
-                                abs(ph - sh) <= sh * 0.15):
-                            grp.append(p)
-                        else:
-                            out.append(p)
-                    if len(grp) > len(best_group):
-                        best_group, best_outliers = grp, out
-                return best_group, best_outliers
+        if _sched_labels and lbl_up not in _sched_labels:
+            continue
 
-            pis_only = [pi2 for pi2, _ in polys_for_lbl]
-            _, outliers = _group_pis_by_size(pis_only)
+        label_occurrences.append({
+            'x': lx,
+            'y': ly,
+            'label': lbl_up,
+        })
 
-        # Remove outlier polys — they are wrong matches for this label
-        for pi2 in outliers:
-            del poly_label[pi2]
-            poly_dist.pop(pi2, None)
+    distance_matrix = []
 
-    # ── Rescue pass for unmatched AS_PER_PLAN labels ──────────────────────
-    # After polygon-first, some AS_PER_PLAN elements may have no polygon
-    # because a stray label of ANOTHER schedule element claimed their polygon.
-    # Strategy: for each unmatched AS_PER_PLAN label, find the nearest polygon
-    # that is either unclaimed OR claimed by a label that has multiple polygons
-    # (suggesting it captured an extra polygon that belongs here).
-    matched_labels = set(poly_label.values())
-    ap_plan_labels = {
-        lbl for lbl, dim in _sched_tbl_local.items()
-        if dim == 'AS_PER_PLAN' and lbl not in matched_labels
-    } if _sched_labels else set()
+    for label_item in label_occurrences:
+        lx = label_item['x']
+        ly = label_item['y']
 
-    if ap_plan_labels and doc is not None:
-        # Count how many polygons each label currently has
-        from collections import Counter as _Ctr
-        label_poly_count = _Ctr(poly_label.values())
-        # Polygons claimed by a label that has >1 polygon are candidates for re-assignment
-        multi_claimed = {pi for pi, lbl in poly_label.items() if label_poly_count[lbl] > 1}
-        unclaimed = {pi for pi in range(len(sig_polys)) if pi not in poly_label}
-        rescue_candidates = unclaimed | multi_claimed
+        distance_matrix.append([
+            _label_to_polygon_edge_distance(lx, ly, poly)
+            for poly in sig_polys
+        ])
 
-        for lbl in ap_plan_labels:
-            # Search all rescue candidates within LABEL_SEARCH_R*2, unrestricted
-            # by Y-band. A Y-band-first pass was tried here previously, but it
-            # let a near (same-floor) but WRONG-shape candidate (e.g. a small
-            # column) win over the correct wall polygon whenever that wall's
-            # own label happened to sit >Y_BAND_MM from its centroid (a label-
-            # placement offset, not a different floor) -- e.g. SW10 resolving
-            # to a 450x450 column instead of its true 3800x650 wall. The
-            # shape_taken guard below already protects against cross-floor
-            # shape theft, so a plain nearest-candidate search is sufficient
-            # and more reliable here.
-            best_pi, best_dist = None, LABEL_SEARCH_R * 2
-            for lx, ly, ltxt in label_positions:
-                if ltxt.upper() != lbl:
-                    continue
-                for pi in rescue_candidates:
-                    poly = sig_polys[pi]
-                    d = math.sqrt((poly['cx'] - lx) ** 2 + (poly['cy'] - ly) ** 2)
-                    if d < best_dist:
-                        best_dist = d
-                        best_pi = pi
-            if best_pi is not None:
-                # Only rescue if this polygon's shape (W×H) doesn't already exist
-                # among ANY other polygon in poly_label — prevents assigning a stray
-                # copy of an existing shape (e.g. SW8's duplicate) to a new label.
-                cand = sig_polys[best_pi]
-                shape_taken = False
-                for other_pi, other_lbl in poly_label.items():
-                    if other_pi == best_pi:
-                        continue
-                    if other_lbl == lbl:
-                        continue  # same target label is fine
-                    op = sig_polys[other_pi]
-                    w_ratio = max(op['w'], cand['w']) / max(min(op['w'], cand['w']), 1)
-                    h_ratio = max(op['h'], cand['h']) / max(min(op['h'], cand['h']), 1)
-                    if w_ratio < 1.05 and h_ratio < 1.05:
-                        shape_taken = True
-                        break
-                if shape_taken:
-                    # Before giving up: check if any of THIS label's text positions are
-                    # within LABEL_SEARCH_R of the candidate polygon.
-                    # Multi-floor drawings (common in Nova) can have two different element
-                    # types at the same plan position (e.g. SW8 on GF, SW10 on FF) — both
-                    # produce the same shape polygon but with labels placed at different
-                    # offsets (~panel-height apart). In that case we allow the rescue; qty
-                    # is resolved via plan-area label text count, not polygon count.
-                    _min_lbl_d = LABEL_SEARCH_R
-                    for _lx, _ly, _ltxt in label_positions:
-                        if _ltxt.upper() != lbl:
-                            continue
-                        _d = math.sqrt((sig_polys[best_pi]['cx'] - _lx) ** 2 +
-                                       (sig_polys[best_pi]['cy'] - _ly) ** 2)
-                        if _d < _min_lbl_d:
-                            _min_lbl_d = _d
-                    if _min_lbl_d >= LABEL_SEARCH_R:
-                        # No label text close to this polygon → truly a stray shape match
-                        continue
-                    # Label IS close (within search radius) — rescue despite shape sharing
-                # Re-assign this polygon to the rescued label
-                poly_label[best_pi] = lbl
-                poly_dist[best_pi]  = best_dist
-                rescue_candidates.discard(best_pi)
+    from scipy.optimize import linear_sum_assignment
 
-    if not poly_label:
-        return [], [], (
-            "No structural element labels found near polygon shapes.\n"
-            "Expected labels like SW6, SW11, C1, W3 within "
-            f"{LABEL_SEARCH_R / 1000:.0f} m of a polyline centroid."
-        )
+    rows, cols = linear_sum_assignment(distance_matrix)
+
+    poly_label = {}
+    poly_dist = {}
+
+    for row, col in zip(rows, cols):
+        poly_label[int(col)] = label_occurrences[row]['label']
+        poly_dist[int(col)] = distance_matrix[row][col]
+
+    print("poly labels :", poly_label)
 
     # ── Group polylines by label and build BOQ ─────────────────────────────
     from collections import defaultdict as _dd
