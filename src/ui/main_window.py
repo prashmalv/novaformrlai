@@ -26,10 +26,10 @@ from src.output.boq_generator import aggregate_project_boq
 from src.output.pdf_generator import generate_pdf, generate_boq_pdf, generate_quotation_pdf
 from src.output.excel_generator import generate_excel_boq
 from src.parsers.dwg_parser import (
-    parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf,
-    parse_dxf_full, parse_dwg_full, detect_panel_height,
-    parse_nova_drawing, parse_nova_shear_walls, parse_nova_full,
-)
+    parse_dxf, get_conversion_status, dwg_to_dxf,
+    parse_dxf_full, parse_dwg_full, detect_panel_height,)
+from src.dwg_parse.parse_nova_full import parse_nova_full
+
 # pdf_parser legacy functions loaded lazily inside PDFImportDialog to avoid
 # import errors when the module does not expose the old visual-preview API.
 def _load_pdf_legacy_fns():
