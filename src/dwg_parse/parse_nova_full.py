@@ -95,7 +95,7 @@ def parse_nova_full(
         if re.match(r'^(?!H-?\d)[A-Z]{1,3}-?\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):
             _pnf_cnt[_lt_u] += 1
     _pnf_label_cnt: dict = dict(_pnf_cnt)
-
+    print("Get schedule region result", _pnf_label_cnt)
     # ── Step 2: polygon geometry (qty counts + AS_PER_PLAN shapes) ─────────
     poly_elements, poly_boqs, _ = parse_nova_shear_walls(
         dxf_path, product_height_mm=product_height_mm, doc=doc)

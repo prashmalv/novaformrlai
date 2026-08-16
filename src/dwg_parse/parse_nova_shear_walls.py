@@ -152,7 +152,7 @@ def parse_nova_shear_walls(
         if _SW_LABEL_RE.match(_ltxt) and not _in_schedule_table(_lx, _ly):
             _raw_cnt[_ltxt.upper()] += 1
     _plan_label_cnt = dict(_raw_cnt)
-
+    print("Panel lbl count", _plan_label_cnt)
     # ── Collect all significant closed polylines ───────────────────────────
 
     sig_polys: list = []  # dict with points, bounding-box metadata, and vertex count
@@ -228,7 +228,7 @@ def parse_nova_shear_walls(
         try:
             _sched_tbl_local = parse_nova_schedule_table(doc)
             _sched_labels = set(_sched_tbl_local.keys())
-            #print("Label from schedule table :", _sched_labels)
+            print("Label from schedule table try :", _sched_labels, len(_sched_labels))
         except Exception:
             pass
     # A label can legitimately appear in the plan view with NO row in the
@@ -240,8 +240,9 @@ def parse_nova_shear_walls(
     # Any label found in the plan area (already schedule-region-filtered via
     # _plan_label_cnt) is therefore also treated as eligible, exactly like an
     # AS_PER_PLAN schedule entry: its own polygon geometry is authoritative.
-    _sched_labels |= (set(_plan_label_cnt.keys()) - _sched_labels)
 
+    # _sched_labels |= (set(_plan_label_cnt.keys()) - _sched_labels)
+    # print("Label from schedule table :", _sched_labels, len(_sched_labels))
     def _point_to_segment_distance(px, py, x1, y1, x2, y2):
         dx = x2 - x1
         dy = y2 - y1
@@ -430,7 +431,7 @@ def parse_nova_shear_walls(
 
         if _sched_labels and lbl_up not in _sched_labels:
             continue
-
+        #print("Label occurrnec :", lbl_up)
         label_occurrences.append({
             'x': lx,
             'y': ly,
@@ -459,7 +460,7 @@ def parse_nova_shear_walls(
         poly_label[int(col)] = label_occurrences[row]['label']
         poly_dist[int(col)] = distance_matrix[row][col]
 
-    print("poly labels :", poly_label)
+    #print("poly labels :", poly_label)
 
     # ── Group polylines by label and build BOQ ─────────────────────────────
     from collections import defaultdict as _dd
