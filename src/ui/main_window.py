@@ -1600,7 +1600,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.20")
+        version = QLabel("v1.29")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -1799,8 +1799,9 @@ class MainWindow(QMainWindow):
         nova_dxf_lay.addLayout(nova_dxf_row)
 
         nova_dxf_note = QLabel(
-            "ℹ  Nova's own formwork drawings (col.dxf / new block.dxf style) — "
-            "panel dimensions are read directly from the drawing annotations.")
+            "ℹ  Nova's annotated formwork drawings (col.dxf / new block.dxf style). "
+            "Reads element labels (e.g. GF-COL:-900X1500) and panel widths directly "
+            "from the drawing — no optimization run. BOQ matches drawing exactly.")
         nova_dxf_note.setWordWrap(True)
         nova_dxf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
         nova_dxf_lay.addWidget(nova_dxf_note)
@@ -2757,13 +2758,89 @@ class MainWindow(QMainWindow):
         self._import_dwg(path)
 
     def _import_nova_dxf(self):
-        """Import from the Nova Formwork Drawing section."""
+        """Import from Nova's own annotated formwork drawing (col.dxf style)."""
         path = self.nova_dxf_path_edit.text().strip()
         if not path:
             QMessageBox.warning(self, "No File",
                                 "Please select a Nova formwork DXF file first.")
             return
-        self._import_dwg(path)
+
+        panel_h = float(self.panel_height_combo.currentText())
+
+        from PyQt6.QtWidgets import QProgressDialog
+        progress = QProgressDialog(
+            "Reading Nova formwork drawing…\n\nExtracting panel annotations from each element.",
+            None, 0, 0, self
+        )
+        progress.setWindowTitle("Importing Nova Drawing")
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        from PyQt6.QtCore import QCoreApplication
+        QCoreApplication.processEvents()
+
+        try:
+            from src.parsers.nova_drawing_parser import parse_nova_formwork_drawing
+            elements, boqs, err = parse_nova_formwork_drawing(path, panel_h)
+        except Exception as ex:
+            progress.close()
+            QMessageBox.critical(self, "Import Error", str(ex))
+            return
+
+        progress.close()
+
+        if err:
+            QMessageBox.critical(self, "Import Error", err)
+            return
+
+        if not elements:
+            QMessageBox.information(self, "No Elements Found",
+                                    "No Nova formwork element labels were detected.\n\n"
+                                    "Expected labels like  GF-COL:-900X1500  or  FF-COL:-600X900.")
+            return
+
+        # Replace or add
+        if self._elements:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Import Nova Drawing")
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setText(
+                f"<b>{len(elements)} element(s) found in Nova drawing.</b><br><br>"
+                f"This project currently has <b>{len(self._elements)} existing element(s)</b>.<br>"
+                "What would you like to do?"
+            )
+            replace_btn = msg.addButton("Replace All", QMessageBox.ButtonRole.AcceptRole)
+            add_btn     = msg.addButton("Add to Existing", QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn  = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            msg.setDefaultButton(replace_btn)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == cancel_btn:
+                return
+            if clicked == replace_btn:
+                self._elements.clear()
+                self._boqs.clear()
+
+        self._elements.extend(elements)
+        self._boqs.extend(boqs)
+
+        # Collect any warnings
+        warnings_found = []
+        for el, boq in zip(elements, boqs):
+            for w in boq.warnings:
+                warnings_found.append(f"• {el.label}: {w}")
+
+        self._refresh_elements_table()
+        self._set_tab_enabled(1, True)
+        self._set_tab_enabled(4, True)
+
+        msg_parts = [f"<b>{len(elements)} elements imported</b> from Nova formwork drawing."]
+        msg_parts.append("<br>Panel quantities are read <b>directly from the drawing annotations</b>.")
+        if warnings_found:
+            msg_parts.append(f"<br><br><b>{len(warnings_found)} warning(s):</b><br>" +
+                             "<br>".join(warnings_found[:8]) +
+                             ("<br>…and more." if len(warnings_found) > 8 else ""))
+        QMessageBox.information(self, "Import Complete", "".join(msg_parts))
 
     def _import_dwg(self, path: str = None):
         if path is None:

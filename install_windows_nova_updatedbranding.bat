@@ -2,7 +2,7 @@
 REM ============================================================
 REM  NovoForm — Windows Installer
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.28 — July 2026
+REM  Version: 1.29 — July 2026
 REM  Developed by RLAI (rightleft.ai)
 REM
 REM  INSTALL STRATEGY (v1.21+):
@@ -29,12 +29,12 @@ if "%SRC_DIR:~-1%"=="\" set SRC_DIR=%SRC_DIR:~0,-1%
 REM ── Install directory = current user's local AppData ─────────
 set INSTALL_DIR=%LOCALAPPDATA%\NovoForm
 
-title NovoForm v1.28 Installer
+title NovoForm v1.29 Installer
 
 echo.
 echo  ====================================================
 echo   NovoForm — Formwork Analysis and BOQ Generator
-echo   Version 1.28  ^|  Nova Formworks Pvt. Ltd.
+echo   Version 1.29  ^|  Nova Formworks Pvt. Ltd.
 echo   July 2026  ^|  Developed by RLAI (rightleft.ai)
 echo  ====================================================
 echo.
@@ -42,7 +42,10 @@ echo   Installing for user : %USERNAME%
 echo   Install location    : %INSTALL_DIR%
 echo   Desktop shortcut    : %USERPROFILE%\Desktop\NovoForm.lnk
 echo.
-echo   What's new in v1.28:
+echo   What's new in v1.29:
+echo     - Nova Formwork Drawing import reads panel BOQ directly from annotations
+echo     - Supports GF-COL, FF-COL, L-COL, SF-COL and all col.dxf label formats
+echo   What was new in v1.28:
 echo     - SW label-to-polygon matching fixed for multi-floor DXF drawings
 echo     - Same-floor Y-band priority prevents cross-floor label swaps
 echo   What was new in v1.27:
@@ -234,7 +237,7 @@ if not exist "%INSTALL_DIR%\config\api_config.json" (
 REM ── Done ─────────────────────────────────────────────────────
 echo.
 echo  ====================================================
-echo   Installation Complete!  ^|  NovoForm v1.28
+echo   Installation Complete!  ^|  NovoForm v1.29
 echo.
 echo   To launch NovoForm:
 echo     Option 1 : Double-click "NovoForm" on your Desktop
