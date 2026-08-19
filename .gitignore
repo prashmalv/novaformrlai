@@ -16,6 +16,9 @@ tests/*.dxf
 # API keys and local config — never commit
 config/api_config.json
 
+# Auth database — user-specific, never commit
+data/novoform_auth.db
+
 # Client data — never commit private project files
 data/Client Samples/
 data/clients/

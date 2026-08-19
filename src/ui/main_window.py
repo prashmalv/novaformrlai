@@ -279,7 +279,47 @@ class AddElementDialog(QDialog):
 
 # ---------- Edit BOQ Panels Dialog ----------
 
-_CATALOG_WIDTHS = [600, 500, 490, 440, 400, 350, 340, 300, 275, 250, 240, 230, 200, 150, 125, 100, 40]
+def _load_catalog_widths():
+    default = [600, 500, 490, 440, 400, 350, 340, 300,
+               275, 250, 240, 230, 200, 150, 125, 100, 40]
+    excel_path = (
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "panel_catalog_local.xlsx"
+    )
+    if not excel_path.exists():
+        return default
+    wb = None
+    result = default
+    try:
+        import openpyxl as _xl
+        wb = _xl.load_workbook(excel_path, data_only=True)
+        ws = wb.active
+        headers = [cell.value for cell in ws[1]]
+        if "Width_mm" not in headers:
+            return default
+        width_col = headers.index("Width_mm")
+        widths = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            value = row[width_col]
+            if value is not None:
+                try:
+                    widths.append(int(value))
+                except (TypeError, ValueError):
+                    continue
+        if widths:
+            result = sorted(set(widths), reverse=True)
+    except Exception:
+        result = default
+    finally:
+        if wb is not None:
+            wb.close()
+    return result
+
+
+def _get_catalog_widths():
+    return _load_catalog_widths()
+
 
 class EditBOQPanelsDialog(QDialog):
     """
@@ -333,7 +373,7 @@ class EditBOQPanelsDialog(QDialog):
 
         self._add_width_combo = QComboBox()
         self._add_width_combo.addItem("OC80 (Corner)")
-        for w in _CATALOG_WIDTHS:
+        for w in _get_catalog_widths():
             self._add_width_combo.addItem(f"{w} mm")
         add_row.addWidget(self._add_width_combo)
 
@@ -1600,7 +1640,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.29")
+        version = QLabel("v1.30")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -1658,26 +1698,32 @@ class MainWindow(QMainWindow):
         form.setSpacing(10)
 
         self.project_name_edit = QLineEdit()
+        self.project_name_edit.setMaxLength(100)
         self.project_name_edit.setPlaceholderText("e.g. Commercial Complex - Sector 42")
         form.addRow("Project Name:", self.project_name_edit)
 
         self.client_name_edit = QLineEdit()
+        self.client_name_edit.setMaxLength(100)
         self.client_name_edit.setPlaceholderText("Client company name")
         form.addRow("Client Name:", self.client_name_edit)
 
         self.client_addr_edit = QLineEdit()
+        self.client_addr_edit.setMaxLength(100)
         self.client_addr_edit.setPlaceholderText("Client address")
         form.addRow("Client Address:", self.client_addr_edit)
 
         self.ipo_edit = QLineEdit()
+        self.ipo_edit.setMaxLength(20)
         self.ipo_edit.setPlaceholderText("IPO Number (if any)")
         form.addRow("IPO No:", self.ipo_edit)
 
         self.boq_number_edit = QLineEdit()
+        self.boq_number_edit.setMaxLength(20)
         self.boq_number_edit.setPlaceholderText("e.g. BOQ-2025-001 (auto-generated if blank)")
         form.addRow("BOQ Number:", self.boq_number_edit)
 
         self.qtn_number_edit = QLineEdit()
+        self.qtn_number_edit.setMaxLength(20)
         self.qtn_number_edit.setPlaceholderText("e.g. QTN-2025-001 (auto-generated if blank)")
         form.addRow("Quotation Number:", self.qtn_number_edit)
 
@@ -2359,7 +2405,12 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.export_log)
 
         lay.addStretch()
-        return w
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setWidget(w)
+        return scroll
 
     # ====================================================
     # LOGIC
