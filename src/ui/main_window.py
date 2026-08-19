@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QScrollArea, QTextEdit, QSplitter,
     QHeaderView, QFrame, QSizePolicy, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QEvent, QTimer
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
 
 from src.models.element import (
@@ -26,10 +26,11 @@ from src.output.boq_generator import aggregate_project_boq
 from src.output.pdf_generator import generate_pdf, generate_boq_pdf, generate_quotation_pdf
 from src.output.excel_generator import generate_excel_boq
 from src.parsers.dwg_parser import (
-    parse_dwg, parse_dxf, get_conversion_status, dwg_to_dxf,
-    parse_dxf_full, parse_dwg_full, detect_panel_height,
-    parse_nova_drawing, parse_nova_shear_walls, parse_nova_full,
-)
+    parse_dxf, get_conversion_status, dwg_to_dxf,
+    parse_dxf_full, parse_dwg_full, detect_panel_height,)
+from src.dwg_parse.parse_nova_full import parse_nova_full
+from src.dwg_parse.parse_nova_drawing_panel_size import parse_nova_drawing
+
 # pdf_parser legacy functions loaded lazily inside PDFImportDialog to avoid
 # import errors when the module does not expose the old visual-preview API.
 def _load_pdf_legacy_fns():
@@ -279,26 +280,36 @@ class AddElementDialog(QDialog):
 
 # ---------- Edit BOQ Panels Dialog ----------
 
-def _load_catalog_widths():
+from pathlib import Path
+import openpyxl
+
+
+def load_catalog_widths():
     default = [600, 500, 490, 440, 400, 350, 340, 300,
                275, 250, 240, 230, 200, 150, 125, 100, 40]
+
     excel_path = (
         Path(__file__).resolve().parents[2]
         / "config"
         / "panel_catalog_local.xlsx"
     )
+
     if not excel_path.exists():
         return default
+
     wb = None
-    result = default
+    result = default  # single, guaranteed fallback
+
     try:
-        import openpyxl as _xl
-        wb = _xl.load_workbook(excel_path, data_only=True)
+        wb = openpyxl.load_workbook(excel_path, data_only=True)
         ws = wb.active
+
         headers = [cell.value for cell in ws[1]]
         if "Width_mm" not in headers:
             return default
+
         width_col = headers.index("Width_mm")
+
         widths = []
         for row in ws.iter_rows(min_row=2, values_only=True):
             value = row[width_col]
@@ -306,20 +317,30 @@ def _load_catalog_widths():
                 try:
                     widths.append(int(value))
                 except (TypeError, ValueError):
+                    # skip malformed cells instead of crashing the whole load
                     continue
+
         if widths:
             result = sorted(set(widths), reverse=True)
-    except Exception:
+        # if widths is empty, result stays as `default`
+
+    except Exception as ex:
+        #print(f"Unable to load panel catalog: {ex}")
         result = default
+
     finally:
+        # single, guaranteed close point regardless of how we got here
         if wb is not None:
             wb.close()
+
     return result
 
 
-def _get_catalog_widths():
-    return _load_catalog_widths()
+def get_catalog_widths():
+    return load_catalog_widths()
 
+
+#_CATALOG_WIDTHS = [600, 500, 490, 440, 400, 350, 340, 300, 275, 250, 240, 230, 200, 150, 125, 100, 40]
 
 class EditBOQPanelsDialog(QDialog):
     """
@@ -373,7 +394,9 @@ class EditBOQPanelsDialog(QDialog):
 
         self._add_width_combo = QComboBox()
         self._add_width_combo.addItem("OC80 (Corner)")
-        for w in _get_catalog_widths():
+        # for w in _CATALOG_WIDTHS:
+        #     self._add_width_combo.addItem(f"{w} mm")
+        for w in get_catalog_widths():
             self._add_width_combo.addItem(f"{w} mm")
         add_row.addWidget(self._add_width_combo)
 
@@ -1473,6 +1496,151 @@ class _DXFWorker(QThread):
 
 # ---------- PDF Worker — Nova box-culvert PDF parsing ----------
 
+
+
+class _DXFWorker_nova(QThread):
+    """
+    Single worker for all DXF/DWG imports.
+
+    Detection strategy — try-Nova-first (no separate is_nova_drawing() gate):
+      1. Call parse_nova_drawing() directly.
+      2. If it returns elements  → Nova drawing, emit 'nova'.
+      3. If it returns []        → not a Nova drawing, fall through to standard parser.
+
+    Why this is more reliable than is_nova_drawing() + parse_nova_drawing():
+      The old two-step approach opened the DXF file TWICE. On Windows, the very
+      first file open triggers antivirus/Defender scanning (~0.5-2 s). While the
+      file was being scanned, ezdxf's first read (inside is_nova_drawing) could
+      fail or return incomplete data, making the regex miss, returning False, and
+      routing to the wrong parser. The second import worked because the file was
+      already in the OS page cache. One read eliminates the race entirely.
+
+    Emits a dict:
+      {'mode': 'nova',     'elements', 'boqs', 'error'}
+      {'mode': 'standard', 'detected', 'bboxes', 'polylines', 'scale', 'error', 'dxf_path'}
+    """
+    finished = pyqtSignal(object)
+
+    def __init__(self, path: str, casting_h: float, product_h: float, parent=None):
+        super().__init__(parent)
+        self._path      = path
+        self._casting_h = casting_h
+        self._product_h = product_h
+
+    def run(self):
+        try:
+            if self._path.lower().endswith('.dxf'):
+                # ── Definitive Windows AV-scan fix ──────────────────────────────
+                # Windows Defender scans a file on its FIRST ever open.  The scan
+                # runs CONCURRENTLY with the file read, so ezdxf.readfile() may
+                # return incomplete data (no exception — just missing entities).
+                # Fix: do a plain binary read first.  This blocks until the OS
+                # returns the file handle (AV scan must finish before that happens).
+                # Once the scan result is cached, the subsequent ezdxf.readfile()
+                # reads from the OS page cache with no further AV involvement.
+                import ezdxf as _ezdxf
+                import io as _io
+
+                # ── Read entire file into memory first (with retry) ─────────────
+                # Windows Defender / OneDrive sync can cause the first f.read()
+                # to return PARTIAL bytes without raising an exception.  ezdxf
+                # then parses a truncated file silently — no error, just missing
+                # TEXT entities → wrong panel counts.  Second import always works
+                # because the file is then in the OS page cache.
+                #
+                # Fix: check len(_raw) == os.path.getsize() and retry with back-off.
+                # Max extra wait ≈ 0.5+1.0+1.5 = 3 s in the worst case; typical
+                # first import (AV already cached) adds 0 ms.
+                import os as _os, time as _time
+
+                try:
+                    _expected = _os.path.getsize(self._path)
+                except Exception as _re:
+                    self.finished.emit({
+                        'mode': 'standard', 'detected': [], 'bboxes': [],
+                        'polylines': [], 'scale': 1.0,
+                        'error': f"Cannot stat file: {_re}", 'dxf_path': '',
+                    })
+                    return
+
+                # ── Phase 1: warm-up read (wait for AV scan to complete) ────────
+                # Retry until we read the expected number of bytes.
+                # Defender may return partial data on the very first read of a
+                # file it hasn't scanned before; subsequent reads are clean.
+                _raw = b''
+                for _attempt in range(4):
+                    try:
+                        with open(self._path, 'rb') as _f:
+                            _raw = _f.read()
+                    except Exception as _re:
+                        self.finished.emit({
+                            'mode': 'standard', 'detected': [], 'bboxes': [],
+                            'polylines': [], 'scale': 1.0,
+                            'error': f"Cannot read file: {_re}", 'dxf_path': '',
+                        })
+                        return
+                    if len(_raw) >= _expected:
+                        break
+                    _time.sleep(0.5 * (_attempt + 1))   # 0.5 s, 1.0 s, 1.5 s
+
+                # ── Phase 2: parse with readfile() ──────────────────────────────
+                # After Phase 1 the file is in the OS page cache and the AV scan
+                # result is cached — readfile() reads from cache with no Defender
+                # interference.  readfile() is the path that always works on the
+                # 2nd import; we now guarantee it gets clean data on the 1st too.
+                try:
+                    _doc = _ezdxf.readfile(self._path)
+                except Exception as _pe:
+                    self.finished.emit({
+                        'mode': 'standard', 'detected': [], 'bboxes': [],
+                        'polylines': [], 'scale': 1.0,
+                        'error': f"Cannot parse DXF: {_pe}", 'dxf_path': '',
+                    })
+                    return
+
+                # Unified Nova parser: reads schedule table + polygon geometry.
+                # Handles columns (C1, C2…) and shear walls (SW6, SW11…) in one pass.
+                all_elements, all_boqs, nova_err = parse_nova_drawing(
+                    self._path,
+                    product_height_mm=self._product_h,
+                    casting_height_mm=self._casting_h,
+                    doc=_doc,
+                )
+                if all_elements:
+                    self.finished.emit({
+                        'mode': 'nova',
+                        'elements': all_elements, 'boqs': all_boqs, 'error': nova_err,
+                    })
+                    return
+                # No Nova labels found — use standard geometric parser, same doc
+                detected, bboxes, polylines, scale = parse_dxf_full(
+                    self._path, self._casting_h, doc=_doc)
+                self.finished.emit({
+                    'mode': 'standard',
+                    'detected': detected, 'bboxes': bboxes,
+                    'polylines': polylines, 'scale': scale,
+                    'error': None, 'dxf_path': self._path,
+                })
+            else:
+                detected, bboxes, polylines, scale, err, dxf_path = parse_dwg_full(
+                    self._path, self._casting_h)
+                self.finished.emit({
+                    'mode': 'standard',
+                    'detected': detected, 'bboxes': bboxes,
+                    'polylines': polylines, 'scale': scale,
+                    'error': err, 'dxf_path': dxf_path,
+                })
+        except Exception as ex:
+            self.finished.emit({
+                'mode': 'standard',
+                'detected': [], 'bboxes': [], 'polylines': [], 'scale': 1.0,
+                'error': str(ex), 'dxf_path': '',
+            })
+
+# ----------------- Worker for panel size -------------------------
+# ---------- PDF Worker — Nova box-culvert PDF parsing ----------
+
+
 class _PDFWorker(QThread):
     """Runs parse_nova_pdf on a background thread so the UI stays responsive."""
     finished = pyqtSignal(object)   # emits (elements, boqs, error_str)
@@ -1520,6 +1688,26 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._apply_global_style()
+    # ------------- Manoj code start ---------------------------------------
+    # def changeEvent(self, event):
+    #     super().changeEvent(event)
+    #     if event.type() == QEvent.Type.WindowStateChange:
+    #         QTimer.singleShot(0, self._force_full_repaint)
+
+    # def resizeEvent(self, event):
+    #     super().resizeEvent(event)
+    #     QTimer.singleShot(0, self._force_full_repaint)
+
+    # def _force_full_repaint(self):
+    #     central = self.centralWidget()
+    #     if central is not None:
+    #         layout = central.layout()
+    #         if layout is not None:
+    #             layout.activate()
+    #         central.updateGeometry()
+    #         central.update()
+    #     self.repaint()
+    # -------------------manoj code end ---------------------------------------
 
     def _apply_global_style(self):
         self.setStyleSheet(f"""
@@ -1640,7 +1828,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.31")
+        version = QLabel("v1.20")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -1698,12 +1886,12 @@ class MainWindow(QMainWindow):
         form.setSpacing(10)
 
         self.project_name_edit = QLineEdit()
-        self.project_name_edit.setMaxLength(100)
+        self.project_name_edit.setMaxLength(100)  # add by manoj  
         self.project_name_edit.setPlaceholderText("e.g. Commercial Complex - Sector 42")
         form.addRow("Project Name:", self.project_name_edit)
 
         self.client_name_edit = QLineEdit()
-        self.client_name_edit.setMaxLength(100)
+        self.client_name_edit.setMaxLength(100)   # add by manoj
         self.client_name_edit.setPlaceholderText("Client company name")
         form.addRow("Client Name:", self.client_name_edit)
 
@@ -1713,17 +1901,17 @@ class MainWindow(QMainWindow):
         form.addRow("Client Address:", self.client_addr_edit)
 
         self.ipo_edit = QLineEdit()
-        self.ipo_edit.setMaxLength(20)
+        self.ipo_edit.setMaxLength(10)
         self.ipo_edit.setPlaceholderText("IPO Number (if any)")
         form.addRow("IPO No:", self.ipo_edit)
 
         self.boq_number_edit = QLineEdit()
-        self.boq_number_edit.setMaxLength(20)
+        self.boq_number_edit.setMaxLength(10)
         self.boq_number_edit.setPlaceholderText("e.g. BOQ-2025-001 (auto-generated if blank)")
         form.addRow("BOQ Number:", self.boq_number_edit)
 
         self.qtn_number_edit = QLineEdit()
-        self.qtn_number_edit.setMaxLength(20)
+        self.qtn_number_edit.setMaxLength(10)
         self.qtn_number_edit.setPlaceholderText("e.g. QTN-2025-001 (auto-generated if blank)")
         form.addRow("Quotation Number:", self.qtn_number_edit)
 
@@ -1845,9 +2033,8 @@ class MainWindow(QMainWindow):
         nova_dxf_lay.addLayout(nova_dxf_row)
 
         nova_dxf_note = QLabel(
-            "ℹ  Nova's annotated formwork drawings (col.dxf / new block.dxf style). "
-            "Reads element labels (e.g. GF-COL:-900X1500) and panel widths directly "
-            "from the drawing — no optimization run. BOQ matches drawing exactly.")
+            "ℹ  Nova's own formwork drawings (col.dxf / new block.dxf style) — "
+            "panel dimensions are read directly from the drawing annotations.")
         nova_dxf_note.setWordWrap(True)
         nova_dxf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
         nova_dxf_lay.addWidget(nova_dxf_note)
@@ -2267,6 +2454,11 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(12)
+        # Every widget below keeps its real minimum size — if the tab area
+        # is ever shorter than the content needs (e.g. after a maximize/DPI
+        # change that under-reports available height), the QScrollArea this
+        # widget gets wrapped in at the bottom of this function will scroll
+        # instead of Qt silently squeezing/overlapping the buttons.
 
         lbl = QLabel("Export & Output")
         lbl.setStyleSheet(HEADER_STYLE)
@@ -2405,12 +2597,14 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.export_log)
 
         lay.addStretch()
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        scroll.setWidget(w)
-        return scroll
+        return w
+        # --------------------------- mnoj code start -----------------
+        # scroll = QScrollArea()
+        # scroll.setWidgetResizable(True)
+        # scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        # scroll.setWidget(w)
+        # return scroll
+    # --------------------------- manoj code end --------------------------
 
     # ====================================================
     # LOGIC
@@ -2809,89 +3003,13 @@ class MainWindow(QMainWindow):
         self._import_dwg(path)
 
     def _import_nova_dxf(self):
-        """Import from Nova's own annotated formwork drawing (col.dxf style)."""
+        """Import from the Nova Formwork Drawing section."""
         path = self.nova_dxf_path_edit.text().strip()
         if not path:
             QMessageBox.warning(self, "No File",
                                 "Please select a Nova formwork DXF file first.")
             return
-
-        panel_h = float(self.panel_height_combo.currentText())
-
-        from PyQt6.QtWidgets import QProgressDialog
-        progress = QProgressDialog(
-            "Reading Nova formwork drawing…\n\nExtracting panel annotations from each element.",
-            None, 0, 0, self
-        )
-        progress.setWindowTitle("Importing Nova Drawing")
-        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-        from PyQt6.QtCore import QCoreApplication
-        QCoreApplication.processEvents()
-
-        try:
-            from src.parsers.nova_drawing_parser import parse_nova_formwork_drawing
-            elements, boqs, err = parse_nova_formwork_drawing(path, panel_h)
-        except Exception as ex:
-            progress.close()
-            QMessageBox.critical(self, "Import Error", str(ex))
-            return
-
-        progress.close()
-
-        if err:
-            QMessageBox.critical(self, "Import Error", err)
-            return
-
-        if not elements:
-            QMessageBox.information(self, "No Elements Found",
-                                    "No Nova formwork element labels were detected.\n\n"
-                                    "Expected labels like  GF-COL:-900X1500  or  FF-COL:-600X900.")
-            return
-
-        # Replace or add
-        if self._elements:
-            msg = QMessageBox(self)
-            msg.setWindowTitle("Import Nova Drawing")
-            msg.setIcon(QMessageBox.Icon.Question)
-            msg.setText(
-                f"<b>{len(elements)} element(s) found in Nova drawing.</b><br><br>"
-                f"This project currently has <b>{len(self._elements)} existing element(s)</b>.<br>"
-                "What would you like to do?"
-            )
-            replace_btn = msg.addButton("Replace All", QMessageBox.ButtonRole.AcceptRole)
-            add_btn     = msg.addButton("Add to Existing", QMessageBox.ButtonRole.AcceptRole)
-            cancel_btn  = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-            msg.setDefaultButton(replace_btn)
-            msg.exec()
-            clicked = msg.clickedButton()
-            if clicked == cancel_btn:
-                return
-            if clicked == replace_btn:
-                self._elements.clear()
-                self._boqs.clear()
-
-        self._elements.extend(elements)
-        self._boqs.extend(boqs)
-
-        # Collect any warnings
-        warnings_found = []
-        for el, boq in zip(elements, boqs):
-            for w in boq.warnings:
-                warnings_found.append(f"• {el.label}: {w}")
-
-        self._refresh_elements_table()
-        self._set_tab_enabled(1, True)
-        self._set_tab_enabled(4, True)
-
-        msg_parts = [f"<b>{len(elements)} elements imported</b> from Nova formwork drawing."]
-        msg_parts.append("<br>Panel quantities are read <b>directly from the drawing annotations</b>.")
-        if warnings_found:
-            msg_parts.append(f"<br><br><b>{len(warnings_found)} warning(s):</b><br>" +
-                             "<br>".join(warnings_found[:8]) +
-                             ("<br>…and more." if len(warnings_found) > 8 else ""))
-        QMessageBox.information(self, "Import Complete", "".join(msg_parts))
+        self._import_dwg_nova(path)
 
     def _import_dwg(self, path: str = None):
         if path is None:
@@ -3190,6 +3308,306 @@ class MainWindow(QMainWindow):
         self._dwg_worker.finished.connect(_on_dxf_done)
         self._dwg_worker.start()
 
+    # --------------------- panel sizse -----------------
+    
+    def _import_dwg_nova(self, path: str = None):
+        if path is None:
+            path = self.dwg_path_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, "No File", "Please select a DXF file first.")
+            return
+
+        panel_h    = float(self.panel_height_combo.currentText())
+        casting_h  = float(self.casting_height_combo.currentText()) \
+                     if hasattr(self, 'casting_height_combo') else panel_h
+
+        # Progress dialog — accurate timing hint for large drawings
+        from PyQt6.QtWidgets import QProgressDialog
+        progress = QProgressDialog(
+            "Parsing drawing, please wait…\n\n"
+            "Small drawings  (< 10 elements) :  ~30 sec\n"
+            "Medium drawings (10–30 elements): 1–2 min\n"
+            "Large drawings  (30+ elements)  : 3–6 min\n\n"
+            "The window will stay responsive during parsing.",
+            None, 0, 0, self
+        )
+        progress.setWindowTitle("Importing Drawing")
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        def _on_parse_done(result):
+            progress.close()
+            detected, bboxes_raw, all_polylines, scale_used, err, dxf_render_path = result
+
+            if err:
+                QMessageBox.critical(self, "Import Error", err)
+                return
+
+            if not detected:
+                QMessageBox.information(
+                    self, "No Elements Found",
+                    "No structural elements were detected in the drawing.\n\n"
+                    "Possible reasons:\n"
+                    "• Drawing uses unsupported layer naming\n"
+                    "• Dimensions are in unexpected units\n"
+                    "• Elements drawn as LINES instead of polylines\n\n"
+                    "Try adding elements manually or check the drawing."
+                )
+                return
+
+            # ── Replace / Add / Cancel when project already has elements ──────
+            if self._elements:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Import Drawing")
+                msg.setIcon(QMessageBox.Icon.Question)
+                msg.setText(
+                    f"<b>{len(detected)} element(s) found in the drawing.</b><br><br>"
+                    f"This project currently has <b>{len(self._elements)} existing "
+                    f"element(s)</b>.<br>What would you like to do?"
+                )
+                replace_btn = msg.addButton(
+                    "Replace All  (recommended)", QMessageBox.ButtonRole.AcceptRole)
+                add_btn     = msg.addButton(
+                    "Add to Existing", QMessageBox.ButtonRole.AcceptRole)
+                cancel_btn  = msg.addButton(
+                    "Cancel", QMessageBox.ButtonRole.RejectRole)
+                msg.setDefaultButton(replace_btn)
+                msg.exec()
+
+                clicked = msg.clickedButton()
+                if clicked == cancel_btn:
+                    return
+                if clicked == replace_btn:
+                    # Full reset — clean slate for the new drawing
+                    self._elements.clear()
+                    self._boqs.clear()
+                    self._acc_boqs.clear()
+                    self._project        = ProjectBOQ()
+                    self._agg            = None
+                    self._acc_agg        = None
+                    self._pending_dxf_render_args = None
+                    self._pending_3d_render_args  = None
+                    self._refresh_element_table()
+
+            # ── Auto-detect panel height from DXF text annotations ───────────
+            detected_h = None
+            dxf_for_detect = dxf_render_path if (
+                dxf_render_path and dxf_render_path.lower().endswith('.dxf')
+            ) else (path if path.lower().endswith('.dxf') else None)
+            if dxf_for_detect:
+                try:
+                    detected_h = detect_panel_height(dxf_for_detect)
+                except Exception:
+                    pass
+
+            # ── Import Settings Confirmation ──────────────────────────────────
+            try:
+                cur_ph = int(self.panel_height_combo.currentText())
+            except ValueError:
+                cur_ph = 3705
+            try:
+                cur_ch = int(self.casting_height_combo.currentText())
+            except (ValueError, AttributeError):
+                cur_ch = 3705
+
+            settings_dlg = ImportSettingsDialog(
+                element_count    = len(detected),
+                drawing_name     = Path(path).name,
+                current_panel_h  = cur_ph,
+                detected_panel_h = detected_h,
+                current_casting_h= cur_ch,
+                parent           = self,
+            )
+            if settings_dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            confirmed_ph, confirmed_ch = settings_dlg.get_settings()
+
+            # Apply confirmed heights to Configuration dropdowns
+            ph_idx = self.panel_height_combo.findText(str(confirmed_ph))
+            if ph_idx >= 0:
+                self.panel_height_combo.setCurrentIndex(ph_idx)
+            else:
+                self.panel_height_combo.setCurrentText(str(confirmed_ph))
+            ch_idx = self.casting_height_combo.findText(str(confirmed_ch))
+            if ch_idx >= 0:
+                self.casting_height_combo.setCurrentIndex(ch_idx)
+            else:
+                self.casting_height_combo.setCurrentText(str(confirmed_ch))
+
+            # ── Review dialog ─────────────────────────────────────────────────
+            dlg = DWGReviewDialog(detected, self,
+                                  casting_height_mm=float(confirmed_ch))
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            confirmed = dlg.get_confirmed_elements()
+            added = 0
+            confirmed_bboxes = []
+            for i, elem in enumerate(confirmed):
+                existing_labels = [e.label for e in self._elements]
+                if elem.label in existing_labels:
+                    elem.label = elem.label + "_dwg"
+                self._elements.append(elem)
+                if i < len(bboxes_raw):
+                    confirmed_bboxes.append(bboxes_raw[i])
+                added += 1
+
+            # ── Store drawing preview data — rendered lazily on tab click ─────
+            if bboxes_raw:
+                self._element_bboxes   = confirmed_bboxes
+                self._current_dxf_path = path
+                self._pending_dxf_render_args = dict(
+                    elements  = list(self._elements[-added:]),
+                    bboxes    = confirmed_bboxes,
+                    polylines = all_polylines,
+                    scale     = scale_used,
+                    title     = path,
+                    dxf_path  = dxf_render_path,
+                )
+                self._pending_3d_render_args = dict(
+                    elements = list(self._elements[-added:]),
+                    bboxes   = confirmed_bboxes,
+                    scale    = scale_used,
+                )
+
+            self._is_nova_drawing = False
+            self._refresh_element_table()
+            self._auto_run_boq_silent()
+            self.tabs.setCurrentIndex(1)  # Show Elements tab after import
+
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "DXF_IMPORT",
+                 f"{added} elements from: {Path(path).name}")
+
+            ph_used = int(self.panel_height_combo.currentText())
+            QMessageBox.information(
+                self, "Import Complete",
+                f"✓  {added} element(s) imported — BOQ ready.\n\n"
+                f"Panel height: {ph_used} mm\n\n"
+                f"Change Panel Height / Sets in BOQ Results tab to update instantly.\n"
+                f"Drawing Preview and 3D View available in their tabs."
+            )
+
+        def _on_nova_parse_done(result):
+            """Handler for Nova labelled-panel DXF — BOQs already computed from drawing."""
+            progress.close()
+            elements, boqs, error = result
+
+            if error:
+                QMessageBox.critical(self, "Import Error", error)
+                return
+
+            if not elements:
+                QMessageBox.information(
+                    self, "No Elements Found",
+                    "No labelled column elements were found in this drawing.\n\n"
+                    "Expected labels: 'COL:-LxW', 'FF-COL LxW', 'R-COL LxW' etc.\n\n"
+                    "Try the standard import or add elements manually."
+                )
+                return
+
+            # Replace existing project if user confirms
+            if self._elements:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Nova Drawing Import")
+                msg.setIcon(QMessageBox.Icon.Question)
+                msg.setText(
+                    f"<b>{len(elements)} element(s) found in Nova drawing.</b><br><br>"
+                    f"This project currently has <b>{len(self._elements)} existing "
+                    f"element(s)</b>.<br>What would you like to do?"
+                )
+                replace_btn = msg.addButton(
+                    "Replace All  (recommended)", QMessageBox.ButtonRole.AcceptRole)
+                add_btn     = msg.addButton(
+                    "Add to Existing", QMessageBox.ButtonRole.AcceptRole)
+                cancel_btn  = msg.addButton(
+                    "Cancel", QMessageBox.ButtonRole.RejectRole)
+                msg.setDefaultButton(replace_btn)
+                msg.exec()
+                clicked = msg.clickedButton()
+                # None means dialog closed by Escape/X — treat as Cancel
+                if clicked == cancel_btn or clicked is None:
+                    return
+                if clicked == replace_btn:
+                    self._elements.clear()
+                    self._boqs.clear()
+                    self._acc_boqs.clear()
+                    self._project    = ProjectBOQ()
+                    self._agg        = None
+                    self._acc_agg    = None
+                    self._refresh_element_table()
+
+            # Add elements and pre-computed BOQs directly — no optimization needed
+            added_nova = 0
+            for elem, boq in zip(elements, boqs):
+                existing_labels = [e.label for e in self._elements]
+                if elem.label in existing_labels:
+                    elem.label = elem.label + "_dwg"
+                self._elements.append(elem)
+                self._boqs.append(boq)
+                added_nova += 1
+
+            # Update project BOQ header
+            self._project = ProjectBOQ(
+                project_name=self.project_name_edit.text().strip(),
+                client_name=self.client_name_edit.text().strip(),
+                panel_height_mm=panel_h,
+                element_boqs=list(self._boqs),
+                source_dxf_path=getattr(self, '_current_dxf_path', ''),
+            )
+
+            # Set Drawing Preview and 3D View pending args (consumed on tab click)
+            self._pending_dxf_render_args = dict(
+                elements  = list(self._elements[-added_nova:]),
+                bboxes    = [],
+                polylines = [],
+                scale     = 1.0,
+                title     = path,
+                dxf_path  = path,
+            )
+            self._pending_3d_render_args = dict(
+                elements = list(self._elements[-added_nova:]),
+                bboxes   = [],
+                scale    = 1.0,
+            )
+
+            self._is_nova_drawing = True
+            self._refresh_element_table()
+            self._auto_run_boq_silent(nova_mode=True)
+            self.tabs.setCurrentIndex(1)  # Show Elements tab after import
+
+            from src.auth.auth_manager import log_action as _log
+            _log(self._user["username"], self._user["full_name"],
+                 "NOVA_DXF_IMPORT",
+                 f"{added_nova} elements (BOQ from drawing) from: {Path(path).name}")
+
+            QMessageBox.information(
+                self, "Nova Drawing Import Complete",
+                f"✓  {added_nova} element(s) imported — BOQ ready.\n\n"
+                f"Panel quantities read directly from drawing.\n\n"
+                f"Casting height : {int(casting_h)} mm\n"
+                f"Product panels : {int(panel_h)} mm\n\n"
+                f"Change Panel Height / Sets in the BOQ Results tab to update quantities.\n"
+                f"Drawing Preview and 3D View available in their tabs."
+            )
+
+        # ── Unified worker — is_nova_drawing() runs inside thread to avoid
+        #    first-import failures caused by ezdxf loading slowly on Windows ──
+        def _on_dxf_done(result):
+            if result.get('mode') == 'nova':
+                _on_nova_parse_done((result['elements'], result['boqs'], result['error']))
+            else:
+                _on_parse_done((result['detected'], result['bboxes'],
+                                result['polylines'], result['scale'],
+                                result['error'], result['dxf_path']))
+
+        self._dwg_worker = _DXFWorker_nova(path, casting_h, panel_h, parent=self)
+        self._dwg_worker.finished.connect(_on_dxf_done)
+        self._dwg_worker.start()
+    # ---------------- panel size ---------------------------------
+
     def _run_optimization(self):
         if not self._elements:
             QMessageBox.warning(self, "No Elements",
@@ -3478,62 +3896,15 @@ class MainWindow(QMainWindow):
                     is_ns,
                     p.is_corner,
                     boq_idx,      # store so Edit Panels knows which element
-                    'panel',
                 ))
-
-            # ── Column accessories rows ───────────────────────────────────────
-            if eboq.element.is_column:
-                from src.engine.column_accessories import compute_column_accessories
-                acc = compute_column_accessories(
-                    eboq.element.length_mm,
-                    eboq.element.width_mm,
-                    eboq.element.height_mm,
-                )
-                per_elem = eboq.element.quantity
-                rows.append((
-                    ["", f"  Waller rows: {acc.num_rows}  |  heights: {acc.positions_str}",
-                     "", "", "", f"wallers/row: {acc.rows[0].wallers if acc.rows else 0}"],
-                    False, False, boq_idx, 'acc_header',
-                ))
-                rows.append((
-                    ["", "  Waller", str(acc.total_wallers),
-                     "—", str(acc.total_wallers * per_elem), "nos"],
-                    False, False, boq_idx, 'acc',
-                ))
-                rows.append((
-                    ["", "  Tie Rod", str(acc.total_tierods),
-                     "—", str(acc.total_tierods * per_elem), "nos"],
-                    False, False, boq_idx, 'acc',
-                ))
-                rows.append((
-                    ["", "  Anchor Nut", str(acc.total_anchor_nuts),
-                     "—", str(acc.total_anchor_nuts * per_elem), "nos"],
-                    False, False, boq_idx, 'acc',
-                ))
-
-        _ACC_HDR_BG   = QColor("#e8d8f0")   # light purple — accessories header
-        _ACC_ROW_BG   = QColor("#f5eefa")   # very light purple — accessories data
-        _ACC_FG       = QColor("#5a1a3e")   # dark purple text for accessories
 
         self.boq_detail_table.setRowCount(len(rows))
-        for r, row_tuple in enumerate(rows):
-            row, is_ns, is_oc, boq_idx, row_type = row_tuple
+        for r, (row, is_ns, is_oc, boq_idx) in enumerate(rows):
             for c, val in enumerate(row):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setData(Qt.ItemDataRole.UserRole, boq_idx)
-                if row_type == 'acc_header':
-                    item.setBackground(_ACC_HDR_BG)
-                    item.setForeground(_ACC_FG)
-                    item.setFont(QFont("Helvetica Neue", 9, QFont.Weight.Bold))
-                    if c in (1, 5):
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                elif row_type == 'acc':
-                    item.setBackground(_ACC_ROW_BG)
-                    item.setForeground(_ACC_FG)
-                    if c == 1:
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                elif is_ns:
+                item.setData(Qt.ItemDataRole.UserRole, boq_idx)  # every cell carries index
+                if is_ns:
                     item.setBackground(NS_BG)
                     if c in (1, 5):
                         item.setForeground(NS_FG)
@@ -3582,7 +3953,7 @@ class MainWindow(QMainWindow):
                 self.boq_summary_table.setItem(r, c, item)
 
         # --- Non-standard banner ---
-        total_ns = sum(1 for row_tuple in rows if row_tuple[1])
+        total_ns = sum(1 for _, is_ns, _oc, _bi in rows if is_ns)
         if total_ns:
             labels_str = ", ".join(ns_elem_labels[:5])
             if len(ns_elem_labels) > 5:

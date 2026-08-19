@@ -27,3 +27,5 @@ data/clients/
 *.bak
 ~$*
 *.xlsx
+data/novoform_auth.db
+readme.md
