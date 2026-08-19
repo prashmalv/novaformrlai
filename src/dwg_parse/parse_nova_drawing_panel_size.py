@@ -13,6 +13,7 @@ except ImportError:
 
 # L-shaped column format: L-COL:-(400X3000)+(400X1500)
 _L_COL_RE = re.compile(
+    r'^(?!H[-\s]*\d(?:[-\s]|$))'
     r'(?:(GF|FF|SF|TF|RF|BF|LG|PH|B[0-9]|[1-9][0-9]*[FA])[-\s]*)?'
     r'L[-\s]*COL[:\-\s]*'                       # L-COL + separator
     r'\((\d+)\s*[xX]\s*(\d+)\)'               # (W1xH1)  first leg
@@ -25,6 +26,7 @@ _NOVA_LABEL_RE = re.compile(
     # Floor prefix: named (GF/FF/SF/TF/RF/BF/LG/PH) OR basement B1-B9
     # OR numbered floors 1F-99F / 1A-9A — deliberately excludes bare R/L
     # to avoid consuming R-COL / L-COL type prefixes
+    r'^(?!H[-\s]*\d(?:[-\s]|$))'
     r'(?:(GF|FF|SF|TF|RF|BF|LG|PH|B[0-9]|[1-9][0-9]*[FA])[-\s]*)?'
     r'(R[-\s]*COL|L[-\s]*COL|COL)'             # element type
     r'[:\-\s]+'                                 # separator (colon, dash, space)
@@ -232,7 +234,7 @@ def parse_nova_drawing(
 
     texts     = _collect_texts(msp)
     polylines = _collect_polylines(msp)
-
+    
     if not texts:
         return [], [], "No text entities found — is this a Nova labelled drawing?"
 
@@ -252,6 +254,7 @@ def parse_nova_drawing(
 
         # L-COL parentheses format first: L-COL:-(400X3000)+(400X1500)
         m2 = _L_COL_RE.search(txt)
+        #print("m2", m2)
         if m2:
             floor_str = (m2.group(1) or "").upper()
             leg1_w, leg1_h = int(m2.group(2)), int(m2.group(3))
@@ -291,7 +294,7 @@ def parse_nova_drawing(
             "'R-COL:-Ø1200X2470', 'L-COL:-(400X3000)+(400X1500)'\n"
             f"Sample texts found: {[t for _, _, t in texts[:10]]}"
         )
-
+    #print(" col labels :", col_labels)
     # ── Step 2: for each label, find column outline and read panels ───────────
     elements: list[StructuralElement] = []
     boqs:     list[ElementBOQ] = []
@@ -423,3 +426,4 @@ def parse_nova_drawing(
         )
 
     return elements, boqs, None
+

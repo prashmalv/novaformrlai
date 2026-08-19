@@ -9,6 +9,11 @@ def _collect_texts(msp) -> list[tuple[float, float, str]]:
         try:
             txt = _normalize_dxf_codes(e.dxf.text).strip()
             out.append((e.dxf.insert.x, e.dxf.insert.y, txt))
+            # try:
+            #     float(txt)
+            #     continue
+            # except:
+            #     print("Text :",txt)
         except Exception:
             pass
     for e in msp.query("MTEXT"):
@@ -22,6 +27,11 @@ def _collect_texts(msp) -> list[tuple[float, float, str]]:
                     continue
             txt = _normalize_dxf_codes(txt)
             out.append((e.dxf.insert.x, e.dxf.insert.y, txt))
+            # try:
+            #     float(txt)
+            #     continue
+            # except:
+            #     print("Mtext:", txt)
         except Exception:
             pass
     return out

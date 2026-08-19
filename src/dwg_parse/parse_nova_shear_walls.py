@@ -152,7 +152,7 @@ def parse_nova_shear_walls(
         if _SW_LABEL_RE.match(_ltxt) and not _in_schedule_table(_lx, _ly):
             _raw_cnt[_ltxt.upper()] += 1
     _plan_label_cnt = dict(_raw_cnt)
-    print("Panel lbl count", _plan_label_cnt)
+    #print("Panel lbl count", _plan_label_cnt)
     # ── Collect all significant closed polylines ───────────────────────────
 
     sig_polys: list = []  # dict with points, bounding-box metadata, and vertex count
@@ -228,7 +228,7 @@ def parse_nova_shear_walls(
         try:
             _sched_tbl_local = parse_nova_schedule_table(doc)
             _sched_labels = set(_sched_tbl_local.keys())
-            print("Label from schedule table try :", _sched_labels, len(_sched_labels))
+            #print("Label from schedule table try :", _sched_labels, len(_sched_labels))
         except Exception:
             pass
     # A label can legitimately appear in the plan view with NO row in the
