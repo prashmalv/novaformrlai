@@ -390,8 +390,77 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
 
     for w in boq.warnings:
         items.append(Paragraph(f"  ⚠ {w}", _styles()['warn']))
+
+    # ── Column accessories mini-table ─────────────────────────────────────────
+    if el.is_column:
+        from src.engine.column_accessories import compute_column_accessories
+        acc = compute_column_accessories(el.length_mm, el.width_mm, height_mm)
+        items.append(_col_accessories_table(acc, no_sets))
+
     items.append(Spacer(1, 3*mm))
     return items
+
+
+def _col_accessories_table(acc, no_sets: int) -> Table:
+    """
+    Compact accessories table appended below each column element's panel table.
+    Shows waller rows, per-element totals, and total-for-all-sets quantities.
+    """
+    _ACC_PURPLE = colors.HexColor('#5a1a3e')   # slightly darker for sub-section
+    _ACC_BG     = colors.HexColor('#fdf5fa')
+
+    rows_str = f"Waller rows: {acc.num_rows}  |  heights: {acc.positions_str}  |  " \
+               f"per row: {acc.rows[0].wallers if acc.rows else 0} wallers + {acc.rows[0].tierods if acc.rows else 0} tierods"
+
+    hdr_note = [
+        Paragraph(f"COLUMN ACCESSORIES  — {rows_str}",
+                  ParagraphStyle('ah', fontSize=7, fontName='Helvetica-BoldOblique',
+                                 textColor=colors.white)),
+        '', '', '', ''
+    ]
+    col_hdr = ['PRODUCT', 'Qty / element', 'UOM', f'No. of elements\n(× {no_sets})', 'Total Qty']
+
+    rows = [
+        hdr_note, col_hdr,
+        ['Waller',      acc.total_wallers,       'nos', no_sets, acc.total_wallers * no_sets],
+        ['Tie Rod',     acc.total_tierods,        'nos', '',      acc.total_tierods * no_sets],
+        ['Anchor Nut',  acc.total_anchor_nuts,    'nos', '',      acc.total_anchor_nuts * no_sets],
+    ]
+
+    cw = [CW * 0.36, CW * 0.16, CW * 0.12, CW * 0.18, CW * 0.18]
+    t = Table(rows, colWidths=cw)
+    n = len(rows)
+    t.setStyle(_ts([
+        # Header note spanning full width
+        ('SPAN',         (0, 0), (-1, 0)),
+        ('BACKGROUND',   (0, 0), (-1, 0), _ACC_PURPLE),
+        ('TOPPADDING',   (0, 0), (-1, 0), 3),
+        ('BOTTOMPADDING',(0, 0), (-1, 0), 3),
+        ('LEFTPADDING',  (0, 0), (-1, 0), 4),
+        # Column header row
+        ('BACKGROUND',   (0, 1), (-1, 1), NOVA_NAVY),
+        ('TEXTCOLOR',    (0, 1), (-1, 1), NOVA_WHITE),
+        ('FONTNAME',     (0, 1), (-1, 1), 'Helvetica-Bold'),
+        ('FONTSIZE',     (0, 1), (-1, 1), 7),
+        ('ALIGN',        (0, 1), (-1, 1), 'CENTER'),
+        ('VALIGN',       (0, 1), (-1, 1), 'MIDDLE'),
+        ('TOPPADDING',   (0, 1), (-1, 1), 2),
+        ('BOTTOMPADDING',(0, 1), (-1, 1), 2),
+        # Data rows
+        ('BACKGROUND',   (0, 2), (-1, n-1), _ACC_BG),
+        ('FONTNAME',     (0, 2), (-1, n-1), 'Helvetica'),
+        ('FONTSIZE',     (0, 2), (-1, n-1), 7.5),
+        ('ALIGN',        (1, 2), (-1, n-1), 'CENTER'),
+        ('ALIGN',        (0, 2), (0,  n-1), 'LEFT'),
+        ('TOPPADDING',   (0, 2), (-1, n-1), 2),
+        ('BOTTOMPADDING',(0, 2), (-1, n-1), 2),
+        # "No. of elements" only on first data row (Waller row)
+        ('SPAN',         (3, 2), (3, n-1)),
+        ('VALIGN',       (3, 2), (3, n-1), 'MIDDLE'),
+        # Grid
+        ('GRID',         (0, 1), (-1, n-1), 0.4, colors.HexColor('#cccccc')),
+    ]))
+    return t
 
 
 def _boq_accessories_section(acc_agg: dict, st: dict) -> list:

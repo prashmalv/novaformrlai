@@ -1640,7 +1640,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.30")
+        version = QLabel("v1.31")
         version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
         lay.addWidget(version)
 
@@ -3478,15 +3478,62 @@ class MainWindow(QMainWindow):
                     is_ns,
                     p.is_corner,
                     boq_idx,      # store so Edit Panels knows which element
+                    'panel',
                 ))
 
+            # ── Column accessories rows ───────────────────────────────────────
+            if eboq.element.is_column:
+                from src.engine.column_accessories import compute_column_accessories
+                acc = compute_column_accessories(
+                    eboq.element.length_mm,
+                    eboq.element.width_mm,
+                    eboq.element.height_mm,
+                )
+                per_elem = eboq.element.quantity
+                rows.append((
+                    ["", f"  Waller rows: {acc.num_rows}  |  heights: {acc.positions_str}",
+                     "", "", "", f"wallers/row: {acc.rows[0].wallers if acc.rows else 0}"],
+                    False, False, boq_idx, 'acc_header',
+                ))
+                rows.append((
+                    ["", "  Waller", str(acc.total_wallers),
+                     "—", str(acc.total_wallers * per_elem), "nos"],
+                    False, False, boq_idx, 'acc',
+                ))
+                rows.append((
+                    ["", "  Tie Rod", str(acc.total_tierods),
+                     "—", str(acc.total_tierods * per_elem), "nos"],
+                    False, False, boq_idx, 'acc',
+                ))
+                rows.append((
+                    ["", "  Anchor Nut", str(acc.total_anchor_nuts),
+                     "—", str(acc.total_anchor_nuts * per_elem), "nos"],
+                    False, False, boq_idx, 'acc',
+                ))
+
+        _ACC_HDR_BG   = QColor("#e8d8f0")   # light purple — accessories header
+        _ACC_ROW_BG   = QColor("#f5eefa")   # very light purple — accessories data
+        _ACC_FG       = QColor("#5a1a3e")   # dark purple text for accessories
+
         self.boq_detail_table.setRowCount(len(rows))
-        for r, (row, is_ns, is_oc, boq_idx) in enumerate(rows):
+        for r, row_tuple in enumerate(rows):
+            row, is_ns, is_oc, boq_idx, row_type = row_tuple
             for c, val in enumerate(row):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setData(Qt.ItemDataRole.UserRole, boq_idx)  # every cell carries index
-                if is_ns:
+                item.setData(Qt.ItemDataRole.UserRole, boq_idx)
+                if row_type == 'acc_header':
+                    item.setBackground(_ACC_HDR_BG)
+                    item.setForeground(_ACC_FG)
+                    item.setFont(QFont("Helvetica Neue", 9, QFont.Weight.Bold))
+                    if c in (1, 5):
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                elif row_type == 'acc':
+                    item.setBackground(_ACC_ROW_BG)
+                    item.setForeground(_ACC_FG)
+                    if c == 1:
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                elif is_ns:
                     item.setBackground(NS_BG)
                     if c in (1, 5):
                         item.setForeground(NS_FG)
@@ -3535,7 +3582,7 @@ class MainWindow(QMainWindow):
                 self.boq_summary_table.setItem(r, c, item)
 
         # --- Non-standard banner ---
-        total_ns = sum(1 for _, is_ns, _oc, _bi in rows if is_ns)
+        total_ns = sum(1 for row_tuple in rows if row_tuple[1])
         if total_ns:
             labels_str = ", ".join(ns_elem_labels[:5])
             if len(ns_elem_labels) > 5:

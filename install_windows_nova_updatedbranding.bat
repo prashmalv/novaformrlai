@@ -2,7 +2,7 @@
 REM ============================================================
 REM  NovoForm — Windows Installer
 REM  Nova Formworks Pvt. Ltd.
-REM  Version: 1.30 — August 2026
+REM  Version: 1.31 — August 2026
 REM  Developed by RLAI (rightleft.ai)
 REM
 REM  INSTALL STRATEGY (v1.21+):
@@ -29,12 +29,12 @@ if "%SRC_DIR:~-1%"=="\" set SRC_DIR=%SRC_DIR:~0,-1%
 REM ── Install directory = current user's local AppData ─────────
 set INSTALL_DIR=%LOCALAPPDATA%\NovoForm
 
-title NovoForm v1.30 Installer
+title NovoForm v1.31 Installer
 
 echo.
 echo  ====================================================
 echo   NovoForm — Formwork Analysis and BOQ Generator
-echo   Version 1.30  ^|  Nova Formworks Pvt. Ltd.
+echo   Version 1.31  ^|  Nova Formworks Pvt. Ltd.
 echo   August 2026  ^|  Developed by RLAI (rightleft.ai)
 echo  ====================================================
 echo.
@@ -42,7 +42,13 @@ echo   Installing for user : %USERNAME%
 echo   Install location    : %INSTALL_DIR%
 echo   Desktop shortcut    : %USERPROFILE%\Desktop\NovoForm.lnk
 echo.
-echo   What's new in v1.30:
+echo   What's new in v1.31:
+echo     - Column accessories (Waller, Tie Rod, Anchor Nut) shown in BOQ table
+echo     - Waller rows: 300mm base + 600mm steps, stops within 750mm of top
+echo     - Per-row count: 4 base + 1 extra per 1200mm in length or width
+echo     - Anchor Nuts = 2 x total wallers
+echo     - Accessories appear at base of each column element in BOQ and PDF
+echo   What was new in v1.30:
 echo     - H-label (H-1, H-2) elements excluded from BOQ parsing
 echo     - Input fields capped to prevent layout breaks on long text
 echo     - Panel catalog widths loaded from panel_catalog_local.xlsx if present
@@ -221,7 +227,7 @@ powershell -NoProfile -Command ^
      $s.TargetPath      = 'wscript.exe'; ^
      $s.Arguments       = '\"%LAUNCHER%\"'; ^
      $s.WorkingDirectory= '%INSTALL_DIR%'; ^
-     $s.Description     = 'NovoForm BOQ Generator — Nova Formworks v1.30'; ^
+     $s.Description     = 'NovoForm BOQ Generator — Nova Formworks v1.31'; ^
      $s.Save()" >nul 2>&1
 
 if exist "%SHORTCUT%" (
@@ -243,7 +249,7 @@ if not exist "%INSTALL_DIR%\config\api_config.json" (
 REM ── Done ─────────────────────────────────────────────────────
 echo.
 echo  ====================================================
-echo   Installation Complete!  ^|  NovoForm v1.30
+echo   Installation Complete!  ^|  NovoForm v1.31
 echo.
 echo   To launch NovoForm:
 echo     Option 1 : Double-click "NovoForm" on your Desktop
