@@ -253,6 +253,8 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     el        = boq.element
     height_mm = group['height_mm']
     no_sets   = max(1, el.quantity) * max(1, num_sets)
+    # label = el.label
+    # print("This is label :",label, type(label))
 
     req_type = el.element_type.value.lower()
     dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
@@ -394,7 +396,7 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     # ── Column accessories mini-table ─────────────────────────────────────────
     if el.is_column:
         from src.engine.column_accessories import compute_column_accessories
-        acc = compute_column_accessories(el.length_mm, el.width_mm, height_mm)
+        acc = compute_column_accessories(el.length_mm, el.width_mm, height_mm, el.label)
         items.append(_col_accessories_table(acc, no_sets))
 
     items.append(Spacer(1, 3*mm))
@@ -561,6 +563,7 @@ def generate_boq_pdf(project: ProjectBOQ, output_path: str,
     Generate FORMWORK BOQ PDF matching the updated Nova template.
     Sections: grouped element tables → ACCESSORIES → SUMMARY
     """
+    #print("in pdf gen, project =", project)
     boq_num  = boq_number or f"OP-ID-{abs(hash(project.project_name)) % 10000:04d}"
     date_str = project.date or date.today().strftime("%d/%m/%Y")
     st = _styles()
@@ -593,6 +596,7 @@ def generate_boq_pdf(project: ProjectBOQ, output_path: str,
             pass
 
     groups = _group_boqs(project.element_boqs)
+    #print (" in pdf generator = groups", groups)
     n_sets = max(1, getattr(project, 'num_sets', 1))
     for group in groups:
         block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc)
