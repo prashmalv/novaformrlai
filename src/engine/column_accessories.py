@@ -19,7 +19,7 @@ tested or updated independently.
 """
 
 from dataclasses import dataclass, field
-
+from src.engine.lenght_count_tie_waller import round_up_tie_length, _per_row_tie_count, _per_row_count_waller
 
 @dataclass
 class WallerRow:
@@ -48,6 +48,7 @@ class ColumnAccessoryResult:
         return ", ".join(str(r.position_mm) for r in self.rows) + " mm"
 
 
+
 # ── Core calculation helpers ────────────────────────────────────────────────
 
 def _waller_positions(height_mm: float) -> list:
@@ -65,45 +66,13 @@ def _waller_positions(height_mm: float) -> list:
     return positions
 
 
-def _per_row_count(length_mm: float, width_mm: float) -> int:
-    """
-    Wallers (and tierods) needed on each horizontal row.
-
-    Rule:
-      base  = 4   (one tie-point per corner/face side)
-      extra = floor(length / 1200) + floor(width / 1200)
-              (+1 for every full 1200 mm span in each dimension)
-    """
-    extra = int(length_mm // 1200) + int(width_mm // 1200)
-    return 4 + extra
-
-def _per_row_count_waller(length_mm: float, width_mm: float) -> int:
-    """
-    Calculate wallers required per horizontal row.
-
-    Effective length = wall length + 360 mm on each side.
-
-    Every 3000 mm of effective length requires one additional
-    waller per face.
-    """
-
-    effective_length = length_mm + 560
-
-    waller_len_face = int(max(1, (effective_length + 2999) // 3000))
-    effective_width = width_mm + 560
-    
-    waller_width_face = int(max(1, (effective_width + 2999) // 3000))
-
-    return waller_len_face, waller_width_face
-
-
-# import re
-# L_COL_RE = re.compile(
-#     r'\(\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*\)'
-#     r'\s*\+\s*'
-#     r'\(\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*\)',
-#     re.IGNORECASE
-# )
+import re
+L_COL_RE = re.compile(
+    r'\(\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*\)'
+    r'\s*\+\s*'
+    r'\(\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*\)',
+    re.IGNORECASE
+)
 # ── Public API ──────────────────────────────────────────────────────────────
 
 def compute_column_accessories(
@@ -123,19 +92,32 @@ def compute_column_accessories(
     Returns a ColumnAccessoryResult with per-row breakdown and totals.
     The caller should multiply totals by element.quantity for the project BOQ.
     """
-    # match = L_COL_RE.search(label)
-    # if match:
-    #     l_w, l_h, r_w, r_h = map(float, match.groups())
-    #     min_width = min(left_w, right_w)
-    per_row_tie = _per_row_count(length_mm, width_mm)
-    positions = _waller_positions(height_mm)
-    waller_len_face, waller_width_face = _per_row_count_waller(length_mm,width_mm)
-    per_row_waller = (waller_width_face + waller_len_face) * 2
+    match = L_COL_RE.search(label)
+    if match:
+        l_w, l_h, r_w, r_h = map(float, match.groups())
+        left_w, left_h, = min(l_w,l_h), max(l_w, l_h)
+        right_w, right_h = min(r_h,r_w), max(r_w,r_h)
+        per_row_tie = _per_row_tie_count(length_mm, width_mm)
+        positions = _waller_positions(height_mm)
+        inner_lenght = abs(left_h - right_w)
+        inner_width = abs(right_h - left_w)
+        waller_len_face, waller_width_face,inner_length_face, inner_width_face = _per_row_count_waller(left_h, right_h,inner_width, inner_lenght)
+        per_row_waller = (waller_len_face + waller_width_face + inner_length_face + inner_width_face + 3)
+        rows = [WallerRow(pos, per_row_tie, per_row_waller) for pos in positions]
+        total_tie_rod = per_row_tie * len(rows)
+        total_waller = per_row_waller * len(rows)
+        
+    else:
+        per_row_tie = _per_row_tie_count(length_mm, width_mm)
+        tie_rod_len, tie_rod_width = round_up_tie_length(length_mm, width_mm)
+        #print("Rounded length for column :",width_mm,'w=',tie_rod_width, length_mm,'l=',tie_rod_len)
+        positions = _waller_positions(height_mm)
+        waller_len_face, waller_width_face, inner_length_face, inner_width_face = _per_row_count_waller(length_mm,width_mm)
+        per_row_waller = (waller_width_face + waller_len_face) * 2
+        rows = [WallerRow(pos, per_row_tie, per_row_waller) for pos in positions]
+        total_tie_rod = per_row_tie * len(rows)
+        total_waller = per_row_waller * len(rows)
 
-    rows = [WallerRow(pos, per_row_tie, per_row_waller) for pos in positions]
-
-    total_tie_rod = per_row_tie * len(rows)
-    total_waller = per_row_waller * len(rows)
     return ColumnAccessoryResult(
         length_mm=length_mm,
         width_mm=width_mm,
