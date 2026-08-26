@@ -82,6 +82,7 @@ def _per_row_count_waller(length_mm: float, width_mm: float,inner_length: float 
 
         waller_len_face = int(max(1, (effective_length + 2999) // 3000))
         effective_width = width_mm + 560
+
         
         waller_width_face = int(max(1, (effective_width + 2999) // 3000))
 
