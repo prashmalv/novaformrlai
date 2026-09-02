@@ -75,6 +75,15 @@ L_COL_RE = re.compile(
 )
 # ── Public API ──────────────────────────────────────────────────────────────
 
+def _get_total_waller_count(waller_list) -> int:
+    """Return total waller count from waller calculation result."""
+
+    return sum(
+        values[1]
+        for item in waller_list
+        for values in item.values()
+    )
+
 def compute_column_accessories(
     length_mm: float,
     width_mm: float,
@@ -97,26 +106,29 @@ def compute_column_accessories(
         l_w, l_h, r_w, r_h = map(float, match.groups())
         left_w, left_h, = min(l_w,l_h), max(l_w, l_h)
         right_w, right_h = min(r_h,r_w), max(r_w,r_h)
-        per_row_tie = _per_row_tie_count(length_mm, width_mm)
         positions = _waller_positions(height_mm)
         inner_lenght = abs(left_h - right_w)
         inner_width = abs(right_h - left_w)
-        waller_len_face, waller_width_face,inner_length_face, inner_width_face = _per_row_count_waller(left_h, right_h,inner_width, inner_lenght)
-        per_row_waller = (waller_len_face + waller_width_face + inner_length_face + inner_width_face + 3)
-        rows = [WallerRow(pos, per_row_tie, per_row_waller) for pos in positions]
+        waller_count_leghts_list = _per_row_count_waller(left_h, right_h,inner_width, inner_lenght, left_w, right_w)
+        # calculate total waller
+        total_waller_row = _get_total_waller_count(waller_count_leghts_list)
+        per_row_tie = _per_row_tie_count(length_mm, width_mm)
+        rows = [WallerRow(pos, per_row_tie, total_waller_row) for pos in positions]
         total_tie_rod = per_row_tie * len(rows)
-        total_waller = per_row_waller * len(rows)
+        total_waller = total_waller_row * len(rows)
         
     else:
         per_row_tie = _per_row_tie_count(length_mm, width_mm)
-        tie_rod_len, tie_rod_width = round_up_tie_length(length_mm, width_mm)
+        tie_rod_dimensions_list = round_up_tie_length(length_mm, width_mm)
         #print("Rounded length for column :",width_mm,'w=',tie_rod_width, length_mm,'l=',tie_rod_len)
         positions = _waller_positions(height_mm)
-        waller_len_face, waller_width_face, inner_length_face, inner_width_face = _per_row_count_waller(length_mm,width_mm)
-        per_row_waller = (waller_width_face + waller_len_face) * 2
-        rows = [WallerRow(pos, per_row_tie, per_row_waller) for pos in positions]
+        wallers_count_length_list = _per_row_count_waller(length_mm,width_mm)
+        # find total waller count
+        total_waller_lw = _get_total_waller_count(wallers_count_length_list)
+        total_waller_row  = total_waller_lw * 2
+        rows = [WallerRow(pos, per_row_tie, total_waller_row) for pos in positions]
         total_tie_rod = per_row_tie * len(rows)
-        total_waller = per_row_waller * len(rows)
+        total_waller = total_waller_row * len(rows)
 
     return ColumnAccessoryResult(
         length_mm=length_mm,

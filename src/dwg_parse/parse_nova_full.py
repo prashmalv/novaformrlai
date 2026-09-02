@@ -15,6 +15,8 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # Unified Nova Parser  (schedule table + polygon geometry)
 # ─────────────────────────────────────────────────────────────────────────────
+_SW_LABEL_RE_COMMA = re.compile(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$')
+
 
 def parse_nova_full(
     dxf_path: str,
@@ -94,6 +96,8 @@ def parse_nova_full(
         # if re.match(r'^[A-Z]{1,3}\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):     regex is updated
         if re.match(r'^(?!H-?\d)[A-Z]{1,3}-?\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):
             _pnf_cnt[_lt_u] += 1
+        elif re.match(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$', _lt_u) and not _pnf_in_table(_lx, _ly):
+            _pnf_cnt[_lt_u] += 1 
     _pnf_label_cnt: dict = dict(_pnf_cnt)
     #print("Get schedule region result", _pnf_label_cnt)
     # ── Step 2: polygon geometry (qty counts + AS_PER_PLAN shapes) ─────────
@@ -195,11 +199,47 @@ def parse_nova_full(
             boqs.append(boq)
         except Exception:
             pass
+    # -------- add for label seperating by comma start-----------------------------
+    from dataclasses import replace
 
+    final_elements = []
+    final_boqs = []
+
+    for element, boq in zip(elements, boqs):
+
+        label = element.label.strip()
+
+        if _SW_LABEL_RE_COMMA.match(label):
+
+            labels = [x.strip() for x in label.split(",")]
+
+            for single_label in labels:
+
+                new_element = replace(
+                    element,
+                    label=single_label
+                )
+
+                new_boq = replace(
+                    boq,
+                    element=new_element
+                )
+
+                final_elements.append(new_element)
+                final_boqs.append(new_boq)
+
+        else:
+            final_elements.append(element)
+            final_boqs.append(boq)
+    # -------- add for label seperating by comma end-----------------------------
+    elements = final_elements
+    boqs = final_boqs    
     if not elements:
         return [], [], (
             "No elements found.  The drawing may not have a COLUMN / SHEAR WALL"
             " SCHEDULE table, and no labelled structural polylines were detected."
         )
-
+    # print("final elements:", elements, len(elements))
+    # print("final boqs:", boqs, len(boqs))
+    
     return elements, boqs, None

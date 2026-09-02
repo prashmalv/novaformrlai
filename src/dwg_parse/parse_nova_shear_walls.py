@@ -15,7 +15,7 @@ except ImportError:
 # Label pattern for structural elements: SW6, C1, W2, etc.
 # _SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$')
 _SW_LABEL_RE = re.compile(r'^(?!H-?\d)[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
-
+_SW_LABEL_RE_COMMA = re.compile(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$')
 
 def _classify_polygon_corners(pts: list) -> list:
     """
@@ -150,6 +150,8 @@ def parse_nova_shear_walls(
     _raw_cnt = _LblCounter()
     for _lx, _ly, _ltxt in label_positions:
         if _SW_LABEL_RE.match(_ltxt) and not _in_schedule_table(_lx, _ly):
+            _raw_cnt[_ltxt.upper()] += 1
+        elif _SW_LABEL_RE_COMMA.match(_ltxt) and not _in_schedule_table(_lx, _ly):
             _raw_cnt[_ltxt.upper()] += 1
     _plan_label_cnt = dict(_raw_cnt)
     #print("Panel lbl count", _plan_label_cnt)
@@ -360,6 +362,7 @@ def parse_nova_shear_walls(
         _n = len(_mpts)
         _mxs = [p[0] for p in _mpts]
         _mys = [p[1] for p in _mpts]
+        # print("H & W :", max(_mxs) - min(_mxs),max(_mys) - min(_mys))
 
         def _merged_edge_distance(lx, ly):
             best = float('inf')
@@ -382,7 +385,7 @@ def parse_nova_shear_walls(
         _near_labels = [
             (lx, ly, lt.upper())
             for lx, ly, lt in label_positions
-            if _SW_LABEL_RE.match(lt)
+            if (_SW_LABEL_RE.match(lt) or _SW_LABEL_RE_COMMA)
             and (not _sched_labels or lt.upper() in _sched_labels)
         ]
 
@@ -414,7 +417,6 @@ def parse_nova_shear_walls(
             'min_y': min(_mys),
             'max_y': max(_mys),
         })
-    #print("After merge all open polygon ;",len(sig_polys))
 
     # ── Global label-to-polygon matching ───────────────────────────────────
     # Match each plan label occurrence to one unique polygon using global
@@ -424,8 +426,9 @@ def parse_nova_shear_walls(
     label_occurrences = []
 
     for lx, ly, ltxt in label_positions:
-        if not _SW_LABEL_RE.match(ltxt):
+        if not (_SW_LABEL_RE.match(ltxt) or _SW_LABEL_RE_COMMA.match(ltxt)):
             continue
+    
 
         lbl_up = ltxt.upper()
 
@@ -472,7 +475,7 @@ def parse_nova_shear_walls(
     boqs:     list = []
 
     from src.engine.panel_optimizer import optimize_polygon_element
-
+    #print("poly_label & label_polys :", poly_label, label_polys)
     for label, group in sorted(label_polys.items()):
         # Pick the most structurally significant polyline as representative:
         # prefer highest vertex count (L/T-shapes beat rectangles), then largest
@@ -492,6 +495,7 @@ def parse_nova_shear_walls(
         # Classify element type from bounding box
         long_mm  = max(rep['w'], rep['h'])
         short_mm = min(rep['w'], rep['h'])
+        #print("long_mm or short_mm :", long_mm, short_mm)
         if long_mm / max(short_mm, 1) <= 4.0 and short_mm <= 1500:
             elem_type = ElementType.COLUMN
         else:
