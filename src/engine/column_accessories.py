@@ -19,7 +19,7 @@ tested or updated independently.
 """
 
 from dataclasses import dataclass, field
-from src.engine.lenght_count_tie_waller import round_up_tie_length, _per_row_tie_count, _per_row_count_waller
+from src.engine.lenght_count_tie_waller import _per_row_count_waller, _get_tie_count_and_length
 
 @dataclass
 class WallerRow:
@@ -112,22 +112,20 @@ def compute_column_accessories(
         waller_count_leghts_list = _per_row_count_waller(left_h, right_h,inner_width, inner_lenght, left_w, right_w)
         # calculate total waller
         total_waller_row = _get_total_waller_count(waller_count_leghts_list)
-        per_row_tie = _per_row_tie_count(length_mm, width_mm)
+        per_row_tie,per_row_tie_dimension = _get_tie_count_and_length(length_mm, width_mm,inner_lenght, inner_width, left_w, right_w)
         rows = [WallerRow(pos, per_row_tie, total_waller_row) for pos in positions]
         total_tie_rod = per_row_tie * len(rows)
         total_waller = total_waller_row * len(rows)
         
     else:
-        per_row_tie = _per_row_tie_count(length_mm, width_mm)
-        tie_rod_dimensions_list = round_up_tie_length(length_mm, width_mm)
-        #print("Rounded length for column :",width_mm,'w=',tie_rod_width, length_mm,'l=',tie_rod_len)
+        tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm)
         positions = _waller_positions(height_mm)
         wallers_count_length_list = _per_row_count_waller(length_mm,width_mm)
         # find total waller count
         total_waller_lw = _get_total_waller_count(wallers_count_length_list)
         total_waller_row  = total_waller_lw * 2
-        rows = [WallerRow(pos, per_row_tie, total_waller_row) for pos in positions]
-        total_tie_rod = per_row_tie * len(rows)
+        rows = [WallerRow(pos, tierod_count_per_row, total_waller_row) for pos in positions]
+        total_tie_rod = tierod_count_per_row * len(rows)
         total_waller = total_waller_row * len(rows)
 
     return ColumnAccessoryResult(

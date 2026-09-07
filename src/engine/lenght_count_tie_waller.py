@@ -2,64 +2,213 @@
 import math
 from typing import Tuple
 
-def _per_row_tie_count(length_mm: float, width_mm: float) -> int:
+
+def _get_tie_count_and_length(
+    length_mm: float,
+    width_mm: float,
+    inner_length: float = 0,
+    inner_width: float = 0,
+    left_w: float = 0,
+    right_w: float = 0,
+) -> Tuple[int, dict[int, int]]:
     """
-    Wallers (and tierods) needed on each horizontal row.
+    Calculate the total tie-rod count and tie-rod length distribution.
 
-    Rule:
-      base  = 4   (one tie-point per corner/face side)
-      extra = floor(length / 1200) + floor(width / 1200)
-              (+1 for every full 1200 mm span in each dimension)
-        720 = (80+80+100+100) x2  = 2280 : 3000-720
+    Parameters
+    ----------
+    length_mm : float
+        Outer length of the element in millimetres.
+
+    width_mm : float
+        Outer width of the element in millimetres.
+
+    inner_length : float, optional
+        Inner length of the element. Used for L-type elements.
+
+    inner_width : float, optional
+        Inner width of the element. Used for L-type elements.
+
+    left_w : float, optional
+        Left-side wall width in millimetres.
+
+    right_w : float, optional
+        Right-side wall width in millimetres.
+
+    Returns
+    -------
+    Tuple[int, dict[int, int]]
+        A tuple containing:
+
+        - Total number of tie rods.
+        - Dictionary mapping tie-rod length (mm) to quantity.
+
+    Tie-rod count rules
+    -------------------
+    1. If both ``inner_length`` and ``inner_width`` are provided:
+        - Base count = 5
+        - Additional count = floor(inner_length / 1100)
+        - Additional count = floor(inner_width / 1100)
+
+    2. If ``width_mm > 2280``:
+        - Base count = 4
+        - Additional count = floor(length_mm / 1100)
+
+    3. Otherwise:
+        - Base count = 4
+        - Additional count = floor(length_mm / 1200)
+        - Additional count = floor(width_mm / 1200)
+
+    Tie-rod length rules
+    --------------------
+    Effective dimension = actual dimension + 720 mm.
+
+    Standard tie-rod lengths are:
+
+        1000, 1200, 1500, 1800, 2000, 2500, 3000 mm
+
+    If the effective dimension exceeds 3000 mm, the value is
+    rounded up to the nearest 500 mm.
     """
-    if length_mm > 2280:
-        extra = int(4 + (length_mm//1100))
-        return extra
-    else:
-        extra = int(length_mm // 1200) + int(width_mm // 1200)
-        return (4 + extra)
 
+    standard_lengths = [1000, 1200, 1500, 1800, 2000, 2500, 3000]
 
-def round_up_tie_length(tie_length: float, tie_width: float,) -> int | tuple[int, int]:
-    """
-    Examples:
-    600  -> 600 + 720 = 1320 -> 1500
-    400  -> 400 + 720 = 1120 -> 1200
-    300  -> 300 + 720 = 1020 -> 1200
-    Calculate the required tie-rod length.
+    def round_up_tie_length(value: float) -> int:
+        """Round a tie-rod length up to the next standard length."""
+        for standard_length in standard_lengths:
+            if value <= standard_length:
+                return standard_length
 
-    effective_len   = tie_length + 720
-    effective_width = tie_width + 720
-
-    If effective_len > 3000:
-        Return only the rounded effective_width.
-
-    If effective_len <= 3000:
-        Return both rounded effective_len and effective_width.
-    """
-
-    effective_len = tie_length + 720
-    effective_width = tie_width + 720
-
-    standard_lengths = [1000,1200,1500,1800,2000,2500,3000]
-
-    def round_up(value: float) -> int:
-        for length in standard_lengths:
-            if value <= length:
-                return length
-
-        # For values greater than 3000
+        # For values greater than 3000 mm, round up to the
+        # nearest 500 mm.
         return math.ceil(value / 500) * 500
 
-    if effective_len > 3000:
-        # Only width is considered
-        return [{'outter_cor_dia':500},{'inner_dia':round_up(effective_width)}]
+    # ---------------------------------------------------------
+    # Case 1: Box-type element with inner dimensions
+    # ---------------------------------------------------------
+    if inner_length and inner_width:
+        base_count = 5
 
-    # Both dimensions are considered
-    rounded_len = round_up(effective_len)
-    rounded_width = round_up(effective_width)
+        inner_length_count = int(inner_length // 1100)
+        inner_width_count = int(inner_width // 1100)
 
-    return [{'lenght_dia':rounded_len},{'width_dia': rounded_width}]
+        left_tie_length = round_up_tie_length(left_w + 720)
+        right_tie_length = round_up_tie_length(right_w + 720)
+
+        total_count = (
+            base_count
+            + inner_length_count
+            + inner_width_count
+        )
+
+        tie_length_distribution = {
+            500: base_count,
+            left_tie_length: inner_length_count,
+            right_tie_length: inner_width_count,
+        }
+
+        return total_count, tie_length_distribution
+
+    # ---------------------------------------------------------
+    # Case 2: Width greater than 2280 mm
+    # ---------------------------------------------------------
+    elif width_mm > 2280:
+        base_count = 4
+        additional_count = int(length_mm // 1100)
+
+        tie_length = round_up_tie_length(width_mm + 720)
+
+        total_count = base_count + additional_count
+
+        tie_length_distribution = {
+            500: base_count,
+            tie_length: additional_count,
+        }
+
+        return total_count, tie_length_distribution
+
+    # ---------------------------------------------------------
+    # Case 3: Standard element
+    # ---------------------------------------------------------
+    else:
+        base_count = 4
+
+        length_count = int(length_mm // 1200)
+        width_count = int(width_mm // 1200)
+
+        length_tie_length = round_up_tie_length(length_mm + 720)
+        width_tie_length = round_up_tie_length(width_mm + 720)
+
+        total_count = (
+            base_count
+            + length_count
+            + width_count
+        )
+
+        tie_length_distribution = {
+            500: base_count,
+            length_tie_length: length_count,
+            width_tie_length: width_count,
+        }
+
+        return total_count, tie_length_distribution
+# def _per_row_tie_count(length_mm: float, width_mm: float) -> int:
+#     """
+#     Wallers (and tierods) needed on each horizontal row.
+
+#     Rule:
+#       base  = 4   (one tie-point per corner/face side)
+#       extra = floor(length / 1200) + floor(width / 1200)
+#               (+1 for every full 1200 mm span in each dimension)
+#         720 = (80+80+100+100) x2  = 2280 : 3000-720
+#     """
+#     if length_mm > 2280:
+#         extra = int(4 + (length_mm//1100))
+#         return extra
+#     else:
+#         extra = int(length_mm // 1200) + int(width_mm // 1200)
+#         return (4 + extra)
+
+
+# def round_up_tie_length(tie_length: float, tie_width: float,) -> int | tuple[int, int]:
+#     """
+#     Examples:
+#     600  -> 600 + 720 = 1320 -> 1500
+#     400  -> 400 + 720 = 1120 -> 1200
+#     300  -> 300 + 720 = 1020 -> 1200
+#     Calculate the required tie-rod length.
+
+#     effective_len   = tie_length + 720
+#     effective_width = tie_width + 720
+
+#     If effective_len > 3000:
+#         Return only the rounded effective_width.
+
+#     If effective_len <= 3000:
+#         Return both rounded effective_len and effective_width.
+#     """
+
+#     effective_len = tie_length + 720
+#     effective_width = tie_width + 720
+
+#     standard_lengths = [1000,1200,1500,1800,2000,2500,3000]
+
+#     def round_up(value: float) -> int:
+#         for length in standard_lengths:
+#             if value <= length:
+#                 return length
+
+#         # For values greater than 3000
+#         return math.ceil(value / 500) * 500
+
+#     if effective_len > 3000:
+#         # Only width is considered
+#         return [{'outter_cor_dia':500},{'inner_dia':round_up(effective_width)}]
+
+#     # Both dimensions are considered
+#     rounded_len = round_up(effective_len)
+#     rounded_width = round_up(effective_width)
+
+#     return [{'lenght_dia':rounded_len},{'width_dia': rounded_width}]
 
 
 

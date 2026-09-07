@@ -254,7 +254,8 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     height_mm = group['height_mm']
     no_sets   = max(1, el.quantity) * max(1, num_sets)
     # label = el.label
-    # print("This is label :",label, type(label))
+    # print("this is boq :", boq)
+    # print("This is el :",el, type(el))
 
     req_type = el.element_type.value.lower()
     dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
@@ -397,27 +398,40 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     if el.is_column:
         from src.engine.column_accessories import compute_column_accessories
         acc = compute_column_accessories(el.length_mm, el.width_mm, height_mm, el.label)
-        items.append(_col_accessories_table(acc, no_sets))
+        items.append(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES'))
+
+    items.append(Spacer(1, 3*mm))
+    # ── Column accessories mini-table ─────────────────────────────────────────
+    if el.is_wall:
+        from src.engine.sharewall_accessories import compute_sharewall_accessories
+        acc, highlight_status = compute_sharewall_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
+        items.append(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
 
     items.append(Spacer(1, 3*mm))
     return items
 
 
-def _col_accessories_table(acc, no_sets: int) -> Table:
+def _col_accessories_table(acc, no_sets: int, col, highlight_status = False) -> Table:
     """
     Compact accessories table appended below each column element's panel table.
     Shows waller rows, per-element totals, and total-for-all-sets quantities.
     """
+    
     _ACC_PURPLE = colors.HexColor('#5a1a3e')   # slightly darker for sub-section
     _ACC_BG     = colors.HexColor('#fdf5fa')
+
+    # Set header background based on highlight_status
+    header_bg = colors.white if highlight_status else _ACC_PURPLE
 
     rows_str = f"Waller rows: {acc.num_rows}  |  heights: {acc.positions_str}  |  " \
                f"per row: {acc.rows[0].wallers if acc.rows else 0} wallers + {acc.rows[0].tierods if acc.rows else 0} tierods"
 
+    # Set column text color based on highlight_status
+    col_color = colors.red if highlight_status else colors.white
     hdr_note = [
-        Paragraph(f"COLUMN ACCESSORIES  — {rows_str}",
+        Paragraph(f"{col}  — {rows_str}",
                   ParagraphStyle('ah', fontSize=7, fontName='Helvetica-BoldOblique',
-                                 textColor=colors.white)),
+                                 textColor=col_color)),
         '', '', '', ''
     ]
     col_hdr = ['PRODUCT', 'Qty / element', 'UOM', f'No. of elements\n(× {no_sets})', 'Total Qty']
@@ -435,10 +449,15 @@ def _col_accessories_table(acc, no_sets: int) -> Table:
     t.setStyle(_ts([
         # Header note spanning full width
         ('SPAN',         (0, 0), (-1, 0)),
-        ('BACKGROUND',   (0, 0), (-1, 0), _ACC_PURPLE),
+        ('BACKGROUND',   (0, 0), (-1, 0), header_bg),
         ('TOPPADDING',   (0, 0), (-1, 0), 3),
         ('BOTTOMPADDING',(0, 0), (-1, 0), 3),
         ('LEFTPADDING',  (0, 0), (-1, 0), 4),
+
+        # Inner grid
+        ('GRID',          (0, 0), (-1, -1), 0.5, colors.black),
+        # Outer border
+        ('BOX',           (0, 0), (-1, -1), 1.0, colors.black),
         # Column header row
         ('BACKGROUND',   (0, 1), (-1, 1), NOVA_NAVY),
         ('TEXTCOLOR',    (0, 1), (-1, 1), NOVA_WHITE),
