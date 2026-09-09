@@ -123,8 +123,15 @@ def compute_column_accessories(
 
     elif polygon_pts:
         hori_length, verti_length, diago_length = _get_polygon_lengths(polygon_pts)
-        if len(hori_length) == 2 and len(verti_length) ==2:
-            lengths_lst = hori_length + verti_length
+        length4 = hori_length + verti_length + diago_length
+        length41 = hori_length + verti_length
+
+        if len(length4) == 4 or len(length41) ==4:
+            lengths_lst_sum = hori_length + verti_length
+            if len(lengths_lst_sum) == 4:
+                lengths_lst = lengths_lst_sum
+            else:
+                lengths_lst = length4
             length1, width1 = max(lengths_lst), min(lengths_lst)
             positions = _waller_positions(height_mm)
             waller_count_leghts_list = _per_row_count_waller(length1, width1)
@@ -136,7 +143,6 @@ def compute_column_accessories(
             total_tie_rod = per_row_tie * len(rows)
             total_waller = total_waller_row * len(rows)
             highlight_status = False
-            print(f"plabel1 {label} and vert {lengths_lst}")
         elif len(hori_length) ==3 and len(verti_length) == 3:
             lengths_lst1 = hori_length + verti_length
             hori_length_s, verti_length_s = sorted(hori_length), sorted(verti_length)
@@ -156,11 +162,10 @@ def compute_column_accessories(
             total_tie_rod = per_row_tie * len(rows)
             total_waller = total_waller_lw * len(rows)
             highlight_status = False
-            print(f"plabel2 {label} and vert {lengths_lst1}")
 
     
         else:  # len(hori_length) >=4 and len(verti_length) >=4: 
-            total_vertices = hori_length + verti_length + diago_length
+            total_vertices = hori_length + verti_length
             tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm)
             positions = _waller_positions(height_mm)
             wallers_count_length_list = _per_row_count_waller(length_mm,width_mm, total_vertices)
@@ -171,8 +176,6 @@ def compute_column_accessories(
             total_tie_rod = tierod_count_per_row * len(rows)
             total_waller = total_waller_row * len(rows)
             highlight_status = True
-            print(f"plabel3 {label} and vert {total_vertices}")
-
 
     else:
         tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm)
@@ -185,7 +188,6 @@ def compute_column_accessories(
         total_tie_rod = tierod_count_per_row * len(rows)
         total_waller = total_waller_row * len(rows)
         highlight_status = False
-        print(f"label {label} and match")
 
     
     return ColumnAccessoryResult(

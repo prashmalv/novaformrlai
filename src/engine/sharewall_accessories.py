@@ -158,9 +158,16 @@ def compute_sharewall_accessories(
     """
     # get all vertices length
     hori_length, verti_length, diago_length = _get_polygon_lengths(polygon_pts)
-
-    if len(hori_length) == 2 and len(verti_length) ==2:
-        lengths_lst = hori_length + verti_length
+    length4 = hori_length + verti_length + diago_length
+    length41 = hori_length + verti_length
+    # if len(hori_length) == 2 and len(verti_length) ==2:
+    #     lengths_lst = hori_length + verti_length
+    if len(length4) == 4 or len(length41) ==4:
+        lengths_lst_sum = hori_length + verti_length
+        if len(lengths_lst_sum) == 4:
+            lengths_lst = lengths_lst_sum
+        else:
+            lengths_lst = length4
         length1, width1 = max(lengths_lst), min(lengths_lst)
         positions = _waller_positions(height_mm)
         waller_count_leghts_list = _per_row_count_waller(length1, width1)
