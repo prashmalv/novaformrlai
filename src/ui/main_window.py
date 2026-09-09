@@ -872,6 +872,7 @@ class ImportSettingsDialog(QDialog):
         # Panel height
         self._ph_combo = QComboBox()
         self._ph_combo.addItems(_PANEL_HEIGHT_OPTIONS)
+        self._ph_combo.setEditable(True)   # <-- Make Panel Height editable
         idx = self._ph_combo.findText(str(current_panel_h))
         if idx >= 0:
             self._ph_combo.setCurrentIndex(idx)

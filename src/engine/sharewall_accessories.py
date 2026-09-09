@@ -95,17 +95,17 @@ def _get_polygon_lengths(polygon_pts, tolerance=1e-6):
 
         # Horizontal edge
         if abs(dy) <= tolerance:
-            horizontal_len.append(abs(dx))
+            horizontal_len.append(round(abs(dx)))
 
         # Vertical edge
         elif abs(dx) <= tolerance:
-            vertical_len.append(abs(dy))
+            vertical_len.append(round(abs(dy)))
 
         # Diagonal edge
         else:
             length = math.hypot(dx, dy)
 
-            diagonal_len.append(length)
+            diagonal_len.append(round(length))
 
     return vertical_len, horizontal_len, diagonal_len
 
