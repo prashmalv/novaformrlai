@@ -2046,39 +2046,39 @@ class MainWindow(QMainWindow):
         self._update_dwg_status()
 
         # PDF Import
-        # grp_pdf = QGroupBox("Import from PDF Drawing")
-        # grp_pdf.setStyleSheet(GROUP_STYLE)
-        # pdf_lay = QVBoxLayout(grp_pdf)
+        grp_pdf = QGroupBox("Import from PDF Drawing")
+        grp_pdf.setStyleSheet(GROUP_STYLE)
+        pdf_lay = QVBoxLayout(grp_pdf)
 
-        # pdf_row = QHBoxLayout()
-        # self.pdf_path_edit = QLineEdit()
-        # self.pdf_path_edit.setReadOnly(True)
-        # self.pdf_path_edit.setPlaceholderText(
-        #     "No file selected — click Browse to load a PDF structural drawing")
-        # pdf_row.addWidget(self.pdf_path_edit)
+        pdf_row = QHBoxLayout()
+        self.pdf_path_edit = QLineEdit()
+        self.pdf_path_edit.setReadOnly(True)
+        self.pdf_path_edit.setPlaceholderText(
+            "No file selected — click Browse to load a PDF structural drawing")
+        pdf_row.addWidget(self.pdf_path_edit)
 
-        # btn_pdf_browse = QPushButton("Browse…")
-        # btn_pdf_browse.setStyleSheet(BTN_SECONDARY)
-        # btn_pdf_browse.setFixedWidth(90)
-        # btn_pdf_browse.clicked.connect(self._browse_pdf)
-        # pdf_row.addWidget(btn_pdf_browse)
+        btn_pdf_browse = QPushButton("Browse…")
+        btn_pdf_browse.setStyleSheet(BTN_SECONDARY)
+        btn_pdf_browse.setFixedWidth(90)
+        btn_pdf_browse.clicked.connect(self._browse_pdf)
+        pdf_row.addWidget(btn_pdf_browse)
 
-        # btn_pdf_import = QPushButton("Import Elements")
-        # btn_pdf_import.setStyleSheet(BTN_STYLE)
-        # btn_pdf_import.setFixedWidth(130)
-        # btn_pdf_import.clicked.connect(self._import_pdf)
-        # pdf_row.addWidget(btn_pdf_import)
-        # pdf_lay.addLayout(pdf_row)
+        btn_pdf_import = QPushButton("Import Elements")
+        btn_pdf_import.setStyleSheet(BTN_STYLE)
+        btn_pdf_import.setFixedWidth(130)
+        btn_pdf_import.clicked.connect(self._import_pdf)
+        pdf_row.addWidget(btn_pdf_import)
+        pdf_lay.addLayout(pdf_row)
 
-        # pdf_note = QLabel(
-        #     "ℹ  Supports Nova box-culvert PDFs with panel labels "
-        #     "(BOX CULVERT PLAN / UPPER PIPE PLAN / BOTTOM PIPE PLAN / BOTTOM PANEL PLAN). "
-        #     "Panel BOQ is extracted automatically — same as DXF import.")
-        # pdf_note.setWordWrap(True)
-        # pdf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
-        # pdf_lay.addWidget(pdf_note)
+        pdf_note = QLabel(
+            "ℹ  Supports Nova box-culvert PDFs with panel labels "
+            "(BOX CULVERT PLAN / UPPER PIPE PLAN / BOTTOM PIPE PLAN / BOTTOM PANEL PLAN). "
+            "Panel BOQ is extracted automatically — same as DXF import.")
+        pdf_note.setWordWrap(True)
+        pdf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
+        pdf_lay.addWidget(pdf_note)
 
-        # lay.addWidget(grp_pdf)
+        lay.addWidget(grp_pdf)
 
         # Quick text input
         grp = QGroupBox("Quick Text Input (e.g. '5 columns 300x450 height 3000')")

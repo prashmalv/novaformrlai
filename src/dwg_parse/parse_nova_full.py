@@ -52,6 +52,7 @@ def parse_nova_full(
 
     # ── Step 1: schedule table (authoritative dimensions) ─────────────────
     schedule = parse_nova_schedule_table(doc)
+    #print("this is schedule table :", schedule)
 
     # ── Step 1b: count plan-area label occurrences for schedule-only elements ─
     # For elements in the schedule that the polygon parser did not find in the
@@ -84,6 +85,7 @@ def parse_nova_full(
                 continue
 
     _pnf_sched_regions = _get_schedule_regions(_pnf_raw_texts)
+    #print("this is schedule regions :", _pnf_sched_regions)
 
     def _pnf_in_table(lx: float, ly: float) -> bool:
         return any(rx0 <= lx <= rx1 and ry0 <= ly <= ry1
@@ -99,7 +101,7 @@ def parse_nova_full(
         elif re.match(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$', _lt_u) and not _pnf_in_table(_lx, _ly):
             _pnf_cnt[_lt_u] += 1 
     _pnf_label_cnt: dict = dict(_pnf_cnt)
-    #print("Get schedule region result", _pnf_label_cnt)
+    #print("Get schedule region result(out of table result)", _pnf_label_cnt)
     # ── Step 2: polygon geometry (qty counts + AS_PER_PLAN shapes) ─────────
     poly_elements, poly_boqs, _ = parse_nova_shear_walls(
         dxf_path, product_height_mm=product_height_mm, doc=doc)
@@ -127,6 +129,7 @@ def parse_nova_full(
         if sched_val is not None and sched_val != 'AS_PER_PLAN':
             # Authoritative schedule dimension → override polygon geometry
             length_mm, width_mm = sched_val
+    
             elem = StructuralElement(
                 element_type=_elem_type(label_up),
                 label=label_up,

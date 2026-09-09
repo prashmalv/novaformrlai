@@ -132,8 +132,8 @@ def _get_tie_count_and_length(
     else:
         base_count = 4
 
-        length_count = int(length_mm // 1200)
-        width_count = int(width_mm // 1200)
+        length_count = int((length_mm - 1 )// 1200)
+        width_count = int((width_mm - 1)// 1200)
 
         length_tie_length = round_up_tie_length(length_mm + 720)
         width_tie_length = round_up_tie_length(width_mm + 720)
@@ -254,7 +254,8 @@ def _get_waller_count_and_lengths(
     return count, tuple(lengths)
 
 
-def _per_row_count_waller(length_mm: float, width_mm: float,inner_length: float = 0, inner_width: float = 0, left_w: float =0, right_w : float=0) -> int:
+def _per_row_count_waller(length_mm: float, width_mm: float,inner_length: float = 0, inner_width: float = 0, 
+                          left_w: float =0, right_w : float=0, total_vertices: list=[],) -> int:
     """
     Calculate wallers required per horizontal row.
 
@@ -283,6 +284,16 @@ def _per_row_count_waller(length_mm: float, width_mm: float,inner_length: float 
                 {'inner_width_face':[inner_width, count_inner_width_face4, waller_dia4]},
                 {'left_w_face':[left_w, count_left_w5, waller_dia5]},
                 {'right_w_face':[right_w, count_right_w6, waller_dia6]}]
+    elif total_vertices:
+        reslut_list=[]
+        count = 0
+        for vertic in total_vertices:
+            count +=1
+            valu = round(vertic)
+            effective_vertic = valu + 100
+            count_lengthv, wallers_lenv = _get_waller_count_and_lengths(effective_vertic)
+            reslut_list.append({f"vertic{count}":[valu, count_lengthv, wallers_lenv]})
+        return reslut_list
     else:
         effective_length = length_mm + 560
         count_length, wallers_len1 = _get_waller_count_and_lengths(effective_length)

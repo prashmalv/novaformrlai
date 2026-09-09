@@ -5,6 +5,7 @@ from src.dwg_parse.get_schedule_region import _get_schedule_regions
 from src.dwg_parse.parse_nova_schedule_table import parse_nova_schedule_table
 from src.models.element import StructuralElement, ElementType
 
+
 try:
     import ezdxf
     EZDXF_OK = True
@@ -16,6 +17,10 @@ except ImportError:
 # _SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$')
 _SW_LABEL_RE = re.compile(r'^(?!H-?\d)[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
 _SW_LABEL_RE_COMMA = re.compile(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$')
+
+_COLUMN_PREFIX = re.compile(r'^C\d', re.I)
+def _elem_type(label: str) -> 'ElementType':
+        return ElementType.COLUMN if _COLUMN_PREFIX.match(label) else ElementType.SHEAR_WALL
 
 def _classify_polygon_corners(pts: list) -> list:
     """
@@ -128,7 +133,6 @@ def parse_nova_shear_walls(
                 pos = ent.dxf.insert
             else:
                 continue
-            #print("Raw text :", raw)
             cleaned = _clean_mtext_full(raw)
             if cleaned:
                 label_positions.append((pos.x, pos.y, cleaned))
@@ -154,7 +158,6 @@ def parse_nova_shear_walls(
         elif _SW_LABEL_RE_COMMA.match(_ltxt) and not _in_schedule_table(_lx, _ly):
             _raw_cnt[_ltxt.upper()] += 1
     _plan_label_cnt = dict(_raw_cnt)
-    #print("Panel lbl count", _plan_label_cnt)
     # ── Collect all significant closed polylines ───────────────────────────
 
     sig_polys: list = []  # dict with points, bounding-box metadata, and vertex count
@@ -166,7 +169,6 @@ def parse_nova_shear_walls(
             if len(pts) < 4:
                 continue
             is_closed = ent.is_closed
-            #print("text poly :", pts)
             if not is_closed:
                 # Some DXF authoring tools close a loop by repeating the first
                 # vertex as the last point instead of setting the LWPOLYLINE
@@ -230,7 +232,7 @@ def parse_nova_shear_walls(
         try:
             _sched_tbl_local = parse_nova_schedule_table(doc)
             _sched_labels = set(_sched_tbl_local.keys())
-            #print("Label from schedule table try :", _sched_labels, len(_sched_labels))
+            #print("Label from schedule table try :", _sched_labels, len(_sched_labels), _sched_tbl_local)
         except Exception:
             pass
     # A label can legitimately appear in the plan view with NO row in the
@@ -434,6 +436,8 @@ def parse_nova_shear_walls(
 
         if _sched_labels and lbl_up not in _sched_labels:
             continue
+        if _in_schedule_table(lx,ly):
+            continue
         #print("Label occurrnec :", lbl_up)
         label_occurrences.append({
             'x': lx,
@@ -442,7 +446,7 @@ def parse_nova_shear_walls(
         })
 
     distance_matrix = []
-
+    #print("This is label label occurrences :", label_occurrences)
     for label_item in label_occurrences:
         lx = label_item['x']
         ly = label_item['y']
@@ -475,7 +479,7 @@ def parse_nova_shear_walls(
     boqs:     list = []
 
     from src.engine.panel_optimizer import optimize_polygon_element
-    #print("poly_label & label_polys :", poly_label, label_polys)
+    #print("label_polys :",  label_polys, len(label_polys))
     for label, group in sorted(label_polys.items()):
         # Pick the most structurally significant polyline as representative:
         # prefer highest vertex count (L/T-shapes beat rectangles), then largest
@@ -496,13 +500,13 @@ def parse_nova_shear_walls(
         long_mm  = max(rep['w'], rep['h'])
         short_mm = min(rep['w'], rep['h'])
         #print("long_mm or short_mm :", long_mm, short_mm)
-        if long_mm / max(short_mm, 1) <= 4.0 and short_mm <= 1500:
-            elem_type = ElementType.COLUMN
-        else:
-            elem_type = ElementType.SHEAR_WALL
-
+        # if long_mm / max(short_mm, 1) <= 4.0 and short_mm <= 1500:
+        #     elem_type = ElementType.COLUMN
+        # else:
+        #     elem_type = ElementType.SHEAR_WALL
+        # print("this is label type :", elem_type, label)
         elem = StructuralElement(
-            element_type=elem_type,
+            element_type=_elem_type(label),
             label=label,
             length_mm=round(long_mm),
             width_mm=round(short_mm),

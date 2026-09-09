@@ -172,8 +172,6 @@ def compute_sharewall_accessories(
         total_tie_rod = per_row_tie * len(rows)
         total_waller = total_waller_row * len(rows)
         highlight_status = False
-        print("label, per row tie ans waller 1", label, per_row_tie, total_waller_row, lengths_lst)
-
         
     elif len(hori_length) ==3 and len(verti_length) == 3:
         lengths_lst1 = hori_length + verti_length
@@ -194,22 +192,23 @@ def compute_sharewall_accessories(
         total_tie_rod = per_row_tie * len(rows)
         total_waller = total_waller_lw * len(rows)
         highlight_status = False
-        print("label, per row tie ans waller 2", label, per_row_tie, total_waller_lw, lengths_lst1)
 
-    elif len(hori_length) >=4 and len(verti_length) >=4: 
-        lengths_lst2 = hori_length + verti_length
+    else: 
+        # len(hori_length) >=4 and len(verti_length) >=4
+        total_vertices = hori_length + verti_length + diago_length
         tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm)
         positions = _waller_positions(height_mm)
-        wallers_count_length_list = _per_row_count_waller(length_mm,width_mm)
+        wallers_count_length_list = _per_row_count_waller(length_mm,width_mm, total_vertices=total_vertices)
         # find total waller count
         total_waller_lw = _get_total_waller_count(wallers_count_length_list)
-        total_waller_row  = total_waller_lw * 2
+        total_waller_row  = total_waller_lw
         rows = [WallerRow(pos, tierod_count_per_row, total_waller_row) for pos in positions]
         total_tie_rod = tierod_count_per_row * len(rows)
         total_waller = total_waller_row * len(rows)
         highlight_status = True
-        print("label, per row tie ans waller 3", label, tierod_count_per_row, total_waller_row, lengths_lst2)
-
+  
+            
+    
     return SharewallAccessoryResult(
         length_mm=length_mm,
         width_mm=width_mm,
