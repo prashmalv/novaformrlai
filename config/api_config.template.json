@@ -1,4 +1,6 @@
 {
   "server_url": "",
-  "central_db_path": ""
+  "central_db_path": "",
+  "route_probe_addr": "",
+  "route_probe_port": 80
 }

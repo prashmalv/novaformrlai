@@ -45,11 +45,14 @@ LOGO_PATH    = ROOT / "assets" / "images" / "NovaLogo.png"
 ELEMENT_TYPES  = [e.value for e in ElementType]
 JUNCTION_TYPES = [j.value for j in JunctionType]
 PANEL_HEIGHTS  = [3200, 3000, 2470, 1228, 900, 600]
+DIV_CLOSE = '</div>'
 
+def _close_div():
+    """Render a closing '</div>' tag (shared to avoid literal duplication)."""
+    st.markdown(DIV_CLOSE, unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  CSS
-# ══════════════════════════════════════════════════════════════════════════════
+
 def inject_css():
     st.markdown("""
     <style>
@@ -174,9 +177,8 @@ def inject_css():
     """, unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  Session state
-# ══════════════════════════════════════════════════════════════════════════════
+
 def init_state():
     defaults = {
         "elements":    [],
@@ -194,9 +196,8 @@ def init_state():
             st.session_state[k] = v
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  Header
-# ══════════════════════════════════════════════════════════════════════════════
+
 def render_header():
     col_logo, col_title = st.columns([1, 9])
     with col_logo:
@@ -220,9 +221,8 @@ def render_header():
     st.divider()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  Sidebar — Project details + config
-# ══════════════════════════════════════════════════════════════════════════════
+
 def render_sidebar():
     proj = st.session_state.project
 
@@ -264,53 +264,26 @@ def render_sidebar():
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Tab 1 — Import / Add Elements
-# ══════════════════════════════════════════════════════════════════════════════
-def tab_import():
-    st.markdown('<div class="section-title">📁 Import DXF Drawing or Add Elements Manually</div>',
-                unsafe_allow_html=True)
+def _render_dxf_upload_section():
+    """DXF upload card: file picker, auto-detect button, and conversion help."""
+    st.markdown('<div class="nova-card"><h4>Upload DXF Drawing</h4>', unsafe_allow_html=True)
+    dxf_file = st.file_uploader(
+        "Drop your DXF file here",
+        type=["dxf"],
+        help="DWG files need conversion to DXF first (see guide below)"
+    )
 
-    col_left, col_right = st.columns([1.15, 1])
+    if dxf_file and DXF_AVAILABLE:
+        if st.button("🔍 Auto-Detect Elements from Drawing", use_container_width=True):
+            _run_dxf_auto_detect(dxf_file)
+    elif dxf_file and not DXF_AVAILABLE:
+        st.warning("ezdxf not installed — DXF parsing unavailable.")
+    if not dxf_file:
+        st.info("💡 Upload a DXF file to auto-detect columns, walls, and shear walls.")
+    _close_div()
 
-    # ── DXF upload ──────────────────────────────────────────────────────────
-    with col_left:
-        st.markdown('<div class="nova-card"><h4>Upload DXF Drawing</h4>', unsafe_allow_html=True)
-        dxf_file = st.file_uploader(
-            "Drop your DXF file here",
-            type=["dxf"],
-            help="DWG files need conversion to DXF first (see guide below)"
-        )
-        if dxf_file and DXF_AVAILABLE:
-            if st.button("🔍 Auto-Detect Elements from Drawing", use_container_width=True):
-                with st.spinner("Parsing DXF drawing..."):
-                    with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
-                        tmp.write(dxf_file.getvalue())
-                        tmp_path = tmp.name
-                    try:
-                        detected = parse_dxf(tmp_path)
-                        if detected:
-                            st.session_state.elements   = detected
-                            st.session_state.boq_result = None
-                            st.session_state.edit_idx   = None
-                            st.success(f"✅ Detected {len(detected)} elements from drawing!")
-                        else:
-                            st.warning("No structural elements detected. Try adding manually.")
-                    except Exception as e:
-                        st.error(f"Parse error: {e}")
-                    finally:
-                        try:
-                            os.unlink(tmp_path)
-                        except Exception:
-                            pass
-        elif dxf_file and not DXF_AVAILABLE:
-            st.warning("ezdxf not installed — DXF parsing unavailable.")
-        if not dxf_file:
-            st.info("💡 Upload a DXF file to auto-detect columns, walls, and shear walls.")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        with st.expander("📌 How to convert DWG → DXF?"):
-            st.markdown("""
+    with st.expander("📌 How to convert DWG → DXF?"):
+        st.markdown("""
 **Option 1 — AutoCAD:**
 File → Save As → format: DXF → Save
 
@@ -319,13 +292,48 @@ Download from opendesign.com → Select folders → Convert
 
 **Option 3 — Online converter:**
 Search "DWG to DXF online" — several free tools available.
-            """)
+        """)
 
-    # ── Manual add form ────────────────────────────────────────────────────
+
+def _run_dxf_auto_detect(dxf_file):
+    """Parse an uploaded DXF file and load any detected elements into session state."""
+    with st.spinner("Parsing DXF drawing..."):
+        with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+            tmp.write(dxf_file.getvalue())
+            tmp_path = tmp.name
+        try:
+            detected = parse_dxf(tmp_path)
+            if detected:
+                st.session_state.elements   = detected
+                st.session_state.boq_result = None
+                st.session_state.edit_idx   = None
+                st.success(f"✅ Detected {len(detected)} elements from drawing!")
+            else:
+                st.warning("No structural elements detected. Try adding manually.")
+        except Exception as e:
+            st.error(f"Parse error: {e}")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
+#  Tab 1 — Import / Add Elements
+
+def tab_import():
+    st.markdown('<div class="section-title">📁 Import DXF Drawing or Add Elements Manually</div>',
+                unsafe_allow_html=True)
+
+    col_left, col_right = st.columns([1.15, 1])
+
+    with col_left:
+        _render_dxf_upload_section()
+
     with col_right:
         st.markdown('<div class="nova-card"><h4>Add Element Manually</h4>', unsafe_allow_html=True)
         _add_element_form()
-        st.markdown('</div>', unsafe_allow_html=True)
+        _close_div()
 
     # ── Elements list with Edit / Delete ───────────────────────────────────
     _render_elements_list()
@@ -476,9 +484,8 @@ def _render_edit_form(idx: int, elem: StructuralElement):
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  Tab 2 — BOQ Results  (with pricing panel at top)
-# ══════════════════════════════════════════════════════════════════════════════
+
 def tab_boq():
     st.markdown('<div class="section-title">📊 Bill of Quantities</div>', unsafe_allow_html=True)
 
@@ -661,9 +668,8 @@ def _run_boq():
     st.rerun()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  Tab 3 — Export
-# ══════════════════════════════════════════════════════════════════════════════
+
 def tab_export():
     st.markdown('<div class="section-title">📤 Export Quotation</div>', unsafe_allow_html=True)
 
@@ -766,9 +772,8 @@ def _generate_excel_bytes(proj: ProjectBOQ) -> bytes:
             pass
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  Tab 4 — About
-# ══════════════════════════════════════════════════════════════════════════════
+
 def tab_about():
     st.markdown('<div class="section-title">ℹ️ About NovoForm</div>', unsafe_allow_html=True)
 
@@ -825,9 +830,8 @@ def tab_about():
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  Main
-# ══════════════════════════════════════════════════════════════════════════════
+
 def main():
     inject_css()
     init_state()

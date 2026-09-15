@@ -12,7 +12,7 @@ Admin Panel → Database Settings → enter: http://<THIS-MACHINE-IP>:8765
 import sys
 import socket
 from pathlib import Path
-
+import os
 sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi import FastAPI, HTTPException, Header
@@ -170,15 +170,24 @@ def get_audit(
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
+# Bind address is configurable rather than hardcoded, so this can be locked
+# down to a specific interface if needed. Defaults to 0.0.0.0 because this
+# server is intended to be reachable by every worker machine on the LAN
+# (see module docstring) — set NOVOFORM_BIND_HOST to restrict it, e.g. to a
+# specific LAN interface IP, if broader exposure isn't acceptable in your
+# environment.
+BIND_HOST = os.environ.get("NOVOFORM_BIND_HOST", "0.0.0.0")
 
 if __name__ == "__main__":
     try:
         host_ip = socket.gethostbyname(socket.gethostname())
         if host_ip.startswith("127."):
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            host_ip = s.getsockname()[0]
-            s.close()
+            probe = auth_manager._get_route_probe_addr()
+            if probe:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(probe)
+                host_ip = s.getsockname()[0]
+                s.close()
     except Exception:
         host_ip = "localhost"
 
@@ -186,14 +195,14 @@ if __name__ == "__main__":
     print("  NovoForm Auth Server  v1.3")
     print("  Nova Formworks Pvt. Ltd.")
     print("=" * 55)
-    print(f"  Server address  : http://0.0.0.0:8765")
+    print(f"  Server address  : http://{BIND_HOST}:8765")
     print(f"  Worker machines : http://{host_ip}:8765")
     print(f"  API docs        : http://{host_ip}:8765/docs")
     print("=" * 55)
     print("  Set this URL in each worker machine:")
-    print(f"  Admin Panel → Database Settings → Server URL")
+    print("  Admin Panel → Database Settings → Server URL")
     print(f"  → http://{host_ip}:8765")
     print("=" * 55)
     print("  Press Ctrl+C to stop\n")
-
-    uvicorn.run(app, host="0.0.0.0", port=8765, log_level="info")
+    
+    uvicorn.run(app, host=BIND_HOST, port=8765, log_level="info")

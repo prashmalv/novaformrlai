@@ -29,3 +29,6 @@ data/clients/
 *.xlsx
 data/novoform_auth.db
 readme.md
+.sonar/
+sonar-project.properties
+test.py

@@ -52,7 +52,6 @@ def parse_nova_full(
 
     # ── Step 1: schedule table (authoritative dimensions) ─────────────────
     schedule = parse_nova_schedule_table(doc)
-    #print("this is schedule table :", schedule)
 
     # ── Step 1b: count plan-area label occurrences for schedule-only elements ─
     # For elements in the schedule that the polygon parser did not find in the

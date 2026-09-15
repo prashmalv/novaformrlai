@@ -189,6 +189,24 @@ def _user_log_dir(username: str) -> Path:
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "nova@123"
 
+def _get_route_probe_addr() -> tuple[str, int] | None:
+    """
+    Return (address, port) used only to ask the OS which local network
+    interface/IP it would use to route outbound traffic — no packets are
+    actually sent (UDP connect() is a local, no-handshake operation).
+    Reads from config/api_config.json → "route_probe_addr" / "route_probe_port".
+    Returns None if not configured, so callers can skip this step entirely.
+    """
+    try:
+        if _API_CONFIG.exists():
+            cfg = json.loads(_API_CONFIG.read_text())
+            addr = cfg.get("route_probe_addr", "").strip()
+            if addr:
+                port = int(cfg.get("route_probe_port", 80))
+                return addr, port
+    except Exception:
+        pass
+    return None
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -226,10 +244,12 @@ def _get_host_ip() -> tuple[str, str]:
         ip = socket.gethostbyname(hostname)
         # On some machines gethostbyname returns 127.0.0.1 — try harder
         if ip.startswith("127."):
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
+            probe = _get_route_probe_addr()
+            if probe:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(probe)
+                ip = s.getsockname()[0]
+                s.close()
     except Exception:
         ip = "unknown"
     return hostname, ip

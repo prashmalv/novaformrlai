@@ -4,7 +4,7 @@ from src.dwg_parse.clean_text import _clean_mtext_full
 from src.dwg_parse.get_schedule_region import _get_schedule_regions
 from src.dwg_parse.parse_nova_schedule_table import parse_nova_schedule_table
 from src.models.element import StructuralElement, ElementType
-
+from src.engine.sharewall_accessories import _get_polygon_lengths
 
 try:
     import ezdxf
@@ -77,9 +77,6 @@ def _compute_polygon_face_nets(pts: list, corners: list) -> list:
                  (100 if corners[(i + 1) % n] == 'IC100' else 0)
         nets.append(max(0, round(face_len) - deduct))
     return nets
-
-
-
 
 def parse_nova_shear_walls(
     dxf_path: str,
@@ -178,7 +175,7 @@ def parse_nova_shear_walls(
                 # all, regardless of label logic).
                 _dx = pts[0][0] - pts[-1][0]
                 _dy = pts[0][1] - pts[-1][1]
-                if (_dx * _dx + _dy * _dy) ** 0.5 < 155.0:
+                if (_dx * _dx + _dy * _dy) ** 0.5 < 5.0:
                     is_closed = True
                     pts = pts[:-1]  # drop the duplicated closing vertex
             if not is_closed:
@@ -187,8 +184,15 @@ def parse_nova_shear_walls(
                 continue
             xs = [p[0] for p in pts]
             ys = [p[1] for p in pts]
-            w = max(xs) - min(xs)
-            h = max(ys) - min(ys)
+            hori, verticle, diago = _get_polygon_lengths(pts)
+            total_vert = hori + verticle + diago
+            if len(total_vert) ==4 and diago:
+                h = max(total_vert)
+                w = min(total_vert)
+            else:
+                w = max(xs) - min(xs)
+                h = max(ys) - min(ys)
+            
             if w < 150 or h < 150:
                 continue  # skip annotation boxes / dimension lines
             sig_polys.append({
@@ -419,7 +423,7 @@ def parse_nova_shear_walls(
             'min_y': min(_mys),
             'max_y': max(_mys),
         })
-
+    
     # ── Global label-to-polygon matching ───────────────────────────────────
     # Match each plan label occurrence to one unique polygon using global
     # minimum distance from the label point to the actual polygon boundary.

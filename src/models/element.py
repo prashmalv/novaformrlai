@@ -87,7 +87,7 @@ class PanelEntry:
     area_sqm: float = 0.0
 
     def __post_init__(self):
-        if self.area_sqm == 0.0 and not self.is_filler:
+        if self.area_sqm == 0 and not self.is_filler:
             self.area_sqm = round((self.width_mm * self.height_mm) / 1_000_000, 6)
 
     @property

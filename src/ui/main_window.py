@@ -655,7 +655,7 @@ class DWGReviewDialog(QDialog):
 
 # ---------- Import Settings Confirmation ----------
 
-_PANEL_HEIGHT_OPTIONS = sorted(["3705", "2470", "1235", "3200", "3000"], key=int, reverse=True)
+_PANEL_HEIGHT_OPTIONS = sorted(["3705", "2470", "1235", "3200", "3000","5250"], key=int, reverse=True)
 _CASTING_HEIGHT_OPTIONS = sorted(
     ["500", "600", "750", "900", "1000", "1235", "1500", "1800",
      "2100", "2400", "2470", "2700", "3000", "3200", "3500", "3705",
@@ -924,12 +924,22 @@ class ImportSettingsDialog(QDialog):
         btns.button(QDialogButtonBox.StandardButton.Ok).setStyleSheet(BTN_STYLE)
         layout.addWidget(btns)
 
+    # def _on_accept(self):
+    #     try:
+    #         self._panel_h   = int(self._ph_combo.currentText())
+    #         self._casting_h = int(self._ch_combo.currentText())
+    #     except ValueError:
+    #         pass
+    #     self.accept()
     def _on_accept(self):
         try:
             self._panel_h   = int(self._ph_combo.currentText())
             self._casting_h = int(self._ch_combo.currentText())
         except ValueError:
-            pass
+            QMessageBox.warning(
+                self, "Invalid value",
+                "Panel Height and Casting Height must be whole numbers (mm).")
+            return  # keep dialog open instead of silently accepting stale values
         self.accept()
 
     def get_settings(self) -> tuple:
@@ -2208,6 +2218,7 @@ class MainWindow(QMainWindow):
         self.panel_height_combo = QComboBox()
         self.panel_height_combo.addItems(_PANEL_HEIGHT_OPTIONS)
         self.panel_height_combo.setCurrentText("3705")
+        self.panel_height_combo.setEditable(True)
         self.panel_height_combo.setMinimumWidth(160)
         self.panel_height_combo.currentIndexChanged.connect(
             self._regenerate_boq_if_elements_present)
@@ -2303,6 +2314,7 @@ class MainWindow(QMainWindow):
         self.boq_ph_combo = QComboBox()
         self.boq_ph_combo.addItems(_PANEL_HEIGHT_OPTIONS)
         self.boq_ph_combo.setCurrentText("3705")
+        self.boq_ph_combo.setEditable(True)
         self.boq_ph_combo.setMinimumWidth(90)
         self.boq_ph_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
