@@ -655,7 +655,7 @@ class DWGReviewDialog(QDialog):
 
 # ---------- Import Settings Confirmation ----------
 
-_PANEL_HEIGHT_OPTIONS = sorted(["3705", "2470", "1235", "3200", "3000","5250"], key=int, reverse=True)
+_PANEL_HEIGHT_OPTIONS = sorted(["3705", "2470", "1235", "3200", "3000"], key=int, reverse=True)
 _CASTING_HEIGHT_OPTIONS = sorted(
     ["500", "600", "750", "900", "1000", "1235", "1500", "1800",
      "2100", "2400", "2470", "2700", "3000", "3200", "3500", "3705",
@@ -1696,6 +1696,10 @@ class MainWindow(QMainWindow):
         self._pending_3d_render_args:  dict | None = None
         self._ph_syncing = False
         self._is_nova_drawing = False
+        # Tracks which panel-height field the user most recently typed into
+        # ('config' = Configuration tab, 'boq' = BOQ Results tab), so Refresh
+        # BOQ can pick up the latest typed value without requiring Enter.
+        self._last_ph_edited = 'config'
 
         self._setup_ui()
         self._apply_global_style()
@@ -1839,11 +1843,11 @@ class MainWindow(QMainWindow):
             lay.addWidget(admin_btn)
             lay.addSpacing(4)
 
-        version = QLabel("v1.20")
-        version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
-        lay.addWidget(version)
+        # version = QLabel("v1.20")
+        # version.setStyleSheet("color: #7aabcc; background: transparent; font-size: 10px;")
+        # lay.addWidget(version)
 
-        lay.addSpacing(10)
+        #lay.addSpacing(10)
 
         logout_btn = QPushButton("⎋  Logout")
         logout_btn.setFixedHeight(30)
@@ -2220,6 +2224,8 @@ class MainWindow(QMainWindow):
         self.panel_height_combo.setCurrentText("3705")
         self.panel_height_combo.setEditable(True)
         self.panel_height_combo.setMinimumWidth(160)
+        self.panel_height_combo.editTextChanged.connect(
+            lambda _text: setattr(self, '_last_ph_edited', 'config'))
         self.panel_height_combo.currentIndexChanged.connect(
             self._regenerate_boq_if_elements_present)
         f1.addRow("Panel Height (mm):", self.panel_height_combo)
@@ -2316,6 +2322,8 @@ class MainWindow(QMainWindow):
         self.boq_ph_combo.setCurrentText("3705")
         self.boq_ph_combo.setEditable(True)
         self.boq_ph_combo.setMinimumWidth(90)
+        self.boq_ph_combo.editTextChanged.connect(
+            lambda _text: setattr(self, '_last_ph_edited', 'boq'))
         self.boq_ph_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.boq_ph_combo.currentIndexChanged.connect(self._boq_ph_changed)
@@ -3621,7 +3629,37 @@ class MainWindow(QMainWindow):
         self._dwg_worker.start()
     # ---------------- panel size ---------------------------------
 
+    def _sync_panel_height_before_refresh(self):
+        """
+        Pulls the latest typed panel-height value into panel_height_combo
+        (the value every BOQ calculation reads) before Refresh BOQ runs.
+
+        Without this, an editable QComboBox only commits typed text to
+        currentIndexChanged on Enter/dropdown-select, so a value typed but
+        not confirmed with Enter would be silently ignored by the
+        calculation. _last_ph_edited tracks whichever field (Configuration
+        tab or BOQ Results tab) the user actually typed in last, so we sync
+        in the correct direction regardless of which one they used.
+        """
+        if self._ph_syncing or not hasattr(self, 'boq_ph_combo'):
+            return
+        if self._last_ph_edited == 'boq':
+            src, dst = self.boq_ph_combo, self.panel_height_combo
+        else:
+            src, dst = self.panel_height_combo, self.boq_ph_combo
+        text = src.currentText().strip()
+        if not text or text == dst.currentText():
+            return
+        self._ph_syncing = True
+        idx = dst.findText(text)
+        if idx >= 0:
+            dst.setCurrentIndex(idx)
+        else:
+            dst.setCurrentText(text)
+        self._ph_syncing = False
+
     def _run_optimization(self):
+        self._sync_panel_height_before_refresh()
         if not self._elements:
             QMessageBox.warning(self, "No Elements",
                                 "Please add at least one structural element first.")

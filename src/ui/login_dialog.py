@@ -78,7 +78,7 @@ class LoginDialog(QDialog):
             border-top-right-radius: 12px;
         """)
         hlay = QHBoxLayout(header)
-        hlay.setContentsMargins(20, 0, 12, 0)
+        hlay.setContentsMargins(20, 12, 12, 0)
 
         # Logo
         if _LOGO.exists():
@@ -103,6 +103,17 @@ class LoginDialog(QDialog):
         hlay.addLayout(title_col)
         hlay.addStretch()
 
+        # Right-side column: version pinned above the close button,
+        # both right-aligned to the same edge (true top-right corner)
+        right_col = QVBoxLayout()
+        right_col.setSpacing(4)
+
+        version_label = QLabel("v1.0")
+        version_label.setFont(_ui_font(8))
+        version_label.setStyleSheet(
+            "color: rgba(255,255,255,0.65); background: transparent;")
+        right_col.addWidget(version_label, 0, Qt.AlignmentFlag.AlignRight)
+
         # Close button — dialog is frameless so we need our own
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(28, 28)
@@ -117,7 +128,9 @@ class LoginDialog(QDialog):
         """)
         close_btn.setToolTip("Close application")
         close_btn.clicked.connect(self.reject)
-        hlay.addWidget(close_btn)
+        right_col.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignRight)
+
+        hlay.addLayout(right_col)
 
         vlay.addWidget(header)
         vlay.addSpacing(28)

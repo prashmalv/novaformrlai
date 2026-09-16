@@ -292,7 +292,10 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
         else:
             plabel     = _fmt_panel(panel.size_label)
             qty        = panel.quantity
-            unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 2)
+            if "Inner Corner" in plabel:
+                unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 2)
+            else:
+                unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 2)
             total_qty  = qty * no_sets
             row_area   = round(unit_area * total_qty, 2)
             total_area += row_area
@@ -656,10 +659,14 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
     rows = [['PRODUCT', 'Total Quantity', 'UOM', 'Unit Area (SqM)', 'Total Area (SqM)']]
     grand_area = 0.0
     for k, d in sorted(totals.items(), key=_sort):
-        unit_a = round(d['w'] * d['h'] / 1_000_000, 2)
+        plabel = _fmt_panel(k)
+        if "Inner Corner" in plabel:
+            unit_a = round(2 * d['w'] * d['h'] / 1_000_000, 2)
+        else:
+            unit_a = round(d['w'] * d['h'] / 1_000_000, 2)
         tot_a  = round(unit_a * d['qty'], 2)
         grand_area += tot_a
-        rows.append([_fmt_panel(k), f"{d['qty']:.2f}", "nos",
+        rows.append([plabel, f"{d['qty']:.2f}", "nos",
                      f"{unit_a:.2f}", f"{tot_a:.2f}"])
 
     rows.append(['', '', '', 'Total Area', f"{grand_area:.2f}"])
