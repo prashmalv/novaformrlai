@@ -108,6 +108,102 @@ def _group_boqs(element_boqs: list) -> list[dict]:
     ]
 
 
+def _box_border(ws, r1, c1, r2, c2, thick=_thick, thin=_thin):
+    """Outer 'medium' box + inner 'thin' grid over a cell range (mirrors the
+    PDF's BOX + GRID TableStyle commands on the accessories table)."""
+    for r in range(r1, r2 + 1):
+        for c in range(c1, c2 + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.border = Border(
+                top=thick if r == r1 else thin,
+                bottom=thick if r == r2 else thin,
+                left=thick if c == c1 else thin,
+                right=thick if c == c2 else thin,
+            )
+
+
+def _accessories_block(ws, row, acc, no_sets, title, highlight_status,
+                       col_start=2, col_end=9) -> int:
+    """
+    Column/Shearwall accessories mini-table — mirrors pdf_generator's
+    `_col_accessories_table` (same acc object, same fields, same
+    "manually verify" warning), laid out across columns col_start..col_end
+    (default B:I, matching the BOQ table above it). Returns the next free row.
+    """
+    _ACC_PURPLE = "5A1A3E"
+    _ACC_BG     = "FDF5FA"
+
+    block_start = row
+
+    wallers_per_row = (acc.total_wallers // acc.num_rows) if acc.num_rows else 0
+    tierods_per_row = (acc.total_tierods // acc.num_rows) if acc.num_rows else 0
+    rows_str = (f"Waller rows: {acc.num_rows}  |  heights: {acc.positions_str}  |  "
+                f"per row: {wallers_per_row} wallers + {tierods_per_row} tierods")
+
+    # ── Optional "manually verify" warning row ─────────────────────────────
+    if highlight_status:
+        ws.merge_cells(start_row=row, start_column=col_start, end_row=row, end_column=col_end)
+        c = ws.cell(row=row, column=col_start)
+        c.value = "\u25a0 Need to manually verify accessories"
+        c.font  = Font(italic=True, bold=True, size=7.5, color="FF0000")
+        c.fill  = PatternFill("solid", fgColor=_WHITE)
+        c.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[row].height = 16
+        row += 1
+
+    # ── Accessory header (title + waller-row summary) ──────────────────────
+    header_bg = _WHITE if highlight_status else _ACC_PURPLE
+    header_fc = "FF0000" if highlight_status else _WHITE
+    ws.merge_cells(start_row=row, start_column=col_start, end_row=row, end_column=col_end)
+    c = ws.cell(row=row, column=col_start)
+    c.value = f"{title}  \u2014  {rows_str}"
+    c.font  = Font(italic=True, bold=True, size=7.5, color=header_fc)
+    c.fill  = PatternFill("solid", fgColor=header_bg)
+    c.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[row].height = 16
+    row += 1
+
+    # ── Column header row ────────────────────────────────────────────────
+    # Layout: PRODUCT -> col_start:col_start+2 (3 cols), Qty/element -> +3,
+    # UOM -> +4, No. of elements -> +5:+6 (2 cols, merged), Total Qty -> +7.
+    ws.merge_cells(start_row=row, start_column=col_start,   end_row=row, end_column=col_start + 2)
+    ws.merge_cells(start_row=row, start_column=col_start+5, end_row=row, end_column=col_start + 6)
+    col_hdr   = ['PRODUCT', 'Qty / element', 'UOM',
+                 f'No. of elements\n(\u00d7 {no_sets})', 'Total Qty']
+    positions = [col_start, col_start+3, col_start+4, col_start+5, col_start+7]
+    for pos, htext in zip(positions, col_hdr):
+        _hdr(ws, row, pos, htext, bg=_NAVY, fc=_WHITE)
+    ws.row_dimensions[row].height = 26
+    row += 1
+
+    # ── Data rows ───────────────────────────────────────────────────────
+    data = [
+        ('Waller',     acc.total_wallers,     'nos'),
+        ('Tie Rod',    acc.total_tierods,     'nos'),
+        ('Anchor Nut', acc.total_anchor_nuts, 'nos'),
+    ]
+    data_start = row
+    for name, qty, uom in data:
+        _cell(ws, row, col_start,   name,          align="left", fill=_ACC_BG)
+        _cell(ws, row, col_start+3, f"{qty}",       fill=_ACC_BG)
+        _cell(ws, row, col_start+4, uom,            fill=_ACC_BG)
+        _cell(ws, row, col_start+7, qty * no_sets,  fill=_ACC_BG)
+        row += 1
+    data_end = row - 1
+
+    # "No. of elements" value spans all data rows (SPAN in the PDF version)
+    ws.merge_cells(start_row=data_start, start_column=col_start+5,
+                    end_row=data_end,   end_column=col_start+6)
+    n_cell = ws.cell(row=data_start, column=col_start+5, value=no_sets)
+    n_cell.font      = Font(size=8, color=_NIGHT)
+    n_cell.alignment = Alignment(horizontal="center", vertical="center")
+    n_cell.fill      = PatternFill("solid", fgColor=_ACC_BG)
+
+    block_end = row - 1
+    _box_border(ws, block_start, col_start, block_end, col_end)
+    return row
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # BOQ sheet
 # ══════════════════════════════════════════════════════════════════════════════
@@ -265,7 +361,10 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
 
             label     = _fmt_panel(panel.size_label)
             qty       = panel.quantity
-            unit_a    = round(panel.width_mm * panel.height_mm / 1_000_000, 2)
+            if "Inner Corner" in label:
+                unit_a    = round(2 * panel.width_mm * panel.height_mm / 1_000_000, 2)
+            else:
+                unit_a    = round(panel.width_mm * panel.height_mm / 1_000_000, 2)
             total_qty = qty * no_sets
             row_area  = round(unit_a * total_qty, 2)
             total_area += row_area
@@ -319,6 +418,45 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
                 ws.add_image(img)
             except Exception:
                 pass
+
+        row += 1   # move past the Total Area row before writing anything new
+                   # (block_end_row/diag_bot must stay pointed at that row for
+                   # the diagram merge above; writing warnings/accessories on
+                   # the same row corrupted the file — that's why Excel showed
+                   # a "repair" prompt and the accessories header/column-header
+                   # rows collapsed onto each other)
+
+        # ── Warnings (e.g. "Face X: spacer of 10mm needed") ────────────────
+        # Use a plain text glyph (■), not an emoji codepoint like \u26a0 — on
+        # Windows, Excel renders emoji via the color emoji font regardless of
+        # the cell's font color, so it shows up as a mismatched yellow/black
+        # icon next to the red text instead of a uniform red mark.
+        for w in (getattr(boq, 'warnings', None) or []):
+            ws.merge_cells(f"B{row}:I{row}")
+            c = ws[f"B{row}"]
+            c.value = f"\u25a0 {w}"
+            c.font  = Font(italic=True, size=7.5, color="FF0000")
+            c.alignment = Alignment(horizontal="left", vertical="center")
+            ws.row_dimensions[row].height = 15
+            row += 1
+
+        # ── Accessories (Column / Shearwall) ────────────────────────────────
+        # Same computation modules as pdf_generator._boq_element_table — the
+        # acc object and highlight_status flag are identical, only the table
+        # rendering differs (openpyxl cells vs. reportlab Table).
+        if el.is_column:
+            from src.engine.column_accessories import compute_column_accessories
+            acc, highlight_status = compute_column_accessories(
+                el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
+            row = _accessories_block(ws, row, acc, no_sets, 'COLUMN ACCESSORIES', highlight_status)
+            row += 1   # gap after block
+
+        if el.is_wall:
+            from src.engine.sharewall_accessories import compute_sharewall_accessories
+            acc, highlight_status = compute_sharewall_accessories(
+                el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
+            row = _accessories_block(ws, row, acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status)
+            row += 1   # gap after block
 
         row += 2   # blank gap after block
 
@@ -384,11 +522,15 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
 
     grand_area = 0.0
     for k, d in sorted(totals.items(), key=_sort_key):
-        unit_a = round(d['w'] * d['h'] / 1_000_000, 2)
+        plabel = _fmt_panel(k)
+        if "Inner Corner" in plabel:
+            unit_a = round((2 * d['w'] * d['h']) / 1_000_000, 2)
+        else:
+            unit_a = round(d['w'] * d['h'] / 1_000_000, 2)
         tot_a  = round(unit_a * d['qty'], 2)
         grand_area += tot_a
         fill = _SMOKE if row % 2 == 0 else None
-        _cell(ws, row, 2, _fmt_panel(k),     align="left", fill=fill)
+        _cell(ws, row, 2, plabel,     align="left", fill=fill)
         _cell(ws, row, 3, f"{d['qty']:.2f}", fill=fill)
         _cell(ws, row, 4, "nos",             fill=fill)
         _cell(ws, row, 5, f"{unit_a:.2f}",   fill=fill)
