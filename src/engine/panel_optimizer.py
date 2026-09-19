@@ -124,8 +124,14 @@ def find_panel_combination(
     if max_panels is None:
         max_panels = max(10, (target // min(widths)) + 2)
 
+    # One DP table serves every gap: the table built for `target` already
+    # holds the best combination for every subtotal below it, so `target-gap`
+    # needs no extra pass.  This used to run a full DP per gap value
+    # (MAX_SPACER + 1 = 41 passes) over identical data.
+    choice, reachable = _dp_table(target, widths, max_panels)
+
     # Always prefer a gapless solution — try gap=0 first
-    no_gap = _dp_exact(target, widths, max_panels)
+    no_gap = _dp_rebuild(target, choice, reachable)
     if no_gap is not None:
         return no_gap, 0.0
 
@@ -137,7 +143,7 @@ def find_panel_combination(
         reduced = target - gap
         if reduced <= 0:
             break
-        result = _dp_exact(reduced, widths, max_panels)
+        result = _dp_rebuild(reduced, choice, reachable)
         if result is not None:
             if best_combo is None or _combo_score(result) < _combo_score(best_combo):
                 best_combo = result
@@ -151,6 +157,73 @@ def find_panel_combination(
     return combo, -float(overshoot)
 
 
+def _dp_table(target: int, widths: list[int],
+              max_panels: int) -> tuple[list[int], bytearray]:
+    """
+    Build the panel-fitting DP table once for every subtotal 0…target.
+
+    Stores only what scoring needs — panel count, largest panel so far, and
+    the last panel placed — rather than a materialised list per subtotal.
+    _combo_score is (len, -max) and both parts follow from the predecessor
+    state, so this is exactly equivalent to scoring real lists while running
+    in O(target x len(widths)) time and O(target) memory, instead of
+    O(target x len(widths) x max_panels) time with a list copy per candidate.
+
+    Returns: (choice, reachable)
+      choice[s]    — width of the last panel placed to reach subtotal s
+      reachable[s] — 1 if s can be hit exactly, else 0
+    """
+    size = target + 1
+    cnt = [0] * size           # panels used in the best combo for s
+    mx = [0] * size            # largest panel in the best combo for s
+    choice = [0] * size
+    reachable = bytearray(size)
+    reachable[0] = 1           # empty combo; _combo_score([]) == (0, 0)
+
+    for s in range(1, size):
+        best_cnt = 0
+        best_negmax = 0
+        found = False
+        for w in widths:       # widths are sorted desc, so on a score tie the
+            if w > s:          # larger panel wins — same as the old list loop
+                continue
+            p = s - w
+            if not reachable[p]:
+                continue
+            c = cnt[p] + 1
+            if c > max_panels:
+                continue
+            m = mx[p] if mx[p] > w else w
+            if not found or (c, -m) < (best_cnt, best_negmax):
+                found = True
+                best_cnt = c
+                best_negmax = -m
+                choice[s] = w
+        if found:
+            reachable[s] = 1
+            cnt[s] = best_cnt
+            mx[s] = -best_negmax
+
+    return choice, reachable
+
+
+def _dp_rebuild(target: int, choice: list[int],
+                reachable: bytearray) -> Optional[list[int]]:
+    """Walk the DP table back into a panel list for `target`, or None."""
+    if target <= 0:
+        return []
+    if not reachable[target]:
+        return None
+    out = []
+    s = target
+    while s > 0:
+        w = choice[s]
+        out.append(w)
+        s -= w
+    out.reverse()              # walked backwards; restore original build order
+    return out
+
+
 def _dp_exact(target: int, widths: list[int], max_panels: int) -> Optional[list[int]]:
     """
     DP to find panel combination summing exactly to target.
@@ -158,26 +231,8 @@ def _dp_exact(target: int, widths: list[int], max_panels: int) -> Optional[list[
     """
     if target <= 0:
         return []
-
-    dp = [None] * (target + 1)
-    dp[0] = []
-
-    for s in range(1, target + 1):
-        best = None
-        for w in widths:
-            if w > s:
-                continue
-            prev = dp[s - w]
-            if prev is None:
-                continue
-            candidate = prev + [w]
-            if len(candidate) > max_panels:
-                continue
-            if best is None or _combo_score(candidate) < _combo_score(best):
-                best = candidate
-        dp[s] = best
-
-    return dp[target]
+    choice, reachable = _dp_table(target, widths, max_panels)
+    return _dp_rebuild(target, choice, reachable)
 
 
 def _greedy_fit(target: int, widths: list[int]) -> tuple[list[int], int]:
