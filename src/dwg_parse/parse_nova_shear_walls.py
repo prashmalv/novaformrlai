@@ -462,6 +462,16 @@ def parse_nova_shear_walls(
 
     from scipy.optimize import linear_sum_assignment
 
+    # Nothing to match — the drawing carries no Nova shear-wall labels (some
+    # client drawings annotate elements with bare dimensions like "300x1660"
+    # instead).  An empty list becomes a 1-D array, and linear_sum_assignment
+    # demands a 2-D cost matrix, so calling it here raised
+    # "expected a matrix (2-D array), got a 1 array" and killed the whole
+    # import.  Return empty instead, so the caller falls back to the standard
+    # geometric parser the same way it does for any other unlabelled drawing.
+    if not distance_matrix:
+        return [], [], "No shear-wall labels found in drawing"
+
     rows, cols = linear_sum_assignment(distance_matrix)
 
     poly_label = {}
