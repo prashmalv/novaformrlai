@@ -1,4 +1,5 @@
 from src.dwg_parse.normalize_dxf_code import _normalize_dxf_codes
+from src.dwg_parse.collect_attributes import _collect_attribute_texts
 
 
 
@@ -32,6 +33,12 @@ def _collect_texts(msp) -> list[tuple[float, float, str]]:
             #     continue
             # except:
             #     print("Mtext:", txt)
+        except Exception:
+            pass
+    # Labels held as block attributes rather than TEXT/MTEXT.
+    for x, y, raw in _collect_attribute_texts(msp):
+        try:
+            out.append((x, y, _normalize_dxf_codes(raw).strip()))
         except Exception:
             pass
     return out
