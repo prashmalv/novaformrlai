@@ -124,8 +124,14 @@ def find_panel_combination(
     if max_panels is None:
         max_panels = max(10, (target // min(widths)) + 2)
 
+    # One DP table serves every gap: the table built for `target` already
+    # holds the best combination for every subtotal below it, so `target-gap`
+    # needs no extra pass.  This used to run a full DP per gap value
+    # (MAX_SPACER + 1 = 41 passes) over identical data.
+    choice, reachable = _dp_table(target, widths, max_panels)
+
     # Always prefer a gapless solution — try gap=0 first
-    no_gap = _dp_exact(target, widths, max_panels)
+    no_gap = _dp_rebuild(target, choice, reachable)
     if no_gap is not None:
         return no_gap, 0.0
 
@@ -137,7 +143,7 @@ def find_panel_combination(
         reduced = target - gap
         if reduced <= 0:
             break
-        result = _dp_exact(reduced, widths, max_panels)
+        result = _dp_rebuild(reduced, choice, reachable)
         if result is not None:
             if best_combo is None or _combo_score(result) < _combo_score(best_combo):
                 best_combo = result
@@ -151,6 +157,73 @@ def find_panel_combination(
     return combo, -float(overshoot)
 
 
+def _dp_table(target: int, widths: list[int],
+              max_panels: int) -> tuple[list[int], bytearray]:
+    """
+    Build the panel-fitting DP table once for every subtotal 0…target.
+
+    Stores only what scoring needs — panel count, largest panel so far, and
+    the last panel placed — rather than a materialised list per subtotal.
+    _combo_score is (len, -max) and both parts follow from the predecessor
+    state, so this is exactly equivalent to scoring real lists while running
+    in O(target x len(widths)) time and O(target) memory, instead of
+    O(target x len(widths) x max_panels) time with a list copy per candidate.
+
+    Returns: (choice, reachable)
+      choice[s]    — width of the last panel placed to reach subtotal s
+      reachable[s] — 1 if s can be hit exactly, else 0
+    """
+    size = target + 1
+    cnt = [0] * size           # panels used in the best combo for s
+    mx = [0] * size            # largest panel in the best combo for s
+    choice = [0] * size
+    reachable = bytearray(size)
+    reachable[0] = 1           # empty combo; _combo_score([]) == (0, 0)
+
+    for s in range(1, size):
+        best_cnt = 0
+        best_negmax = 0
+        found = False
+        for w in widths:       # widths are sorted desc, so on a score tie the
+            if w > s:          # larger panel wins — same as the old list loop
+                continue
+            p = s - w
+            if not reachable[p]:
+                continue
+            c = cnt[p] + 1
+            if c > max_panels:
+                continue
+            m = mx[p] if mx[p] > w else w
+            if not found or (c, -m) < (best_cnt, best_negmax):
+                found = True
+                best_cnt = c
+                best_negmax = -m
+                choice[s] = w
+        if found:
+            reachable[s] = 1
+            cnt[s] = best_cnt
+            mx[s] = -best_negmax
+
+    return choice, reachable
+
+
+def _dp_rebuild(target: int, choice: list[int],
+                reachable: bytearray) -> Optional[list[int]]:
+    """Walk the DP table back into a panel list for `target`, or None."""
+    if target <= 0:
+        return []
+    if not reachable[target]:
+        return None
+    out = []
+    s = target
+    while s > 0:
+        w = choice[s]
+        out.append(w)
+        s -= w
+    out.reverse()              # walked backwards; restore original build order
+    return out
+
+
 def _dp_exact(target: int, widths: list[int], max_panels: int) -> Optional[list[int]]:
     """
     DP to find panel combination summing exactly to target.
@@ -158,26 +231,8 @@ def _dp_exact(target: int, widths: list[int], max_panels: int) -> Optional[list[
     """
     if target <= 0:
         return []
-
-    dp = [None] * (target + 1)
-    dp[0] = []
-
-    for s in range(1, target + 1):
-        best = None
-        for w in widths:
-            if w > s:
-                continue
-            prev = dp[s - w]
-            if prev is None:
-                continue
-            candidate = prev + [w]
-            if len(candidate) > max_panels:
-                continue
-            if best is None or _combo_score(candidate) < _combo_score(best):
-                best = candidate
-        dp[s] = best
-
-    return dp[target]
+    choice, reachable = _dp_table(target, widths, max_panels)
+    return _dp_rebuild(target, choice, reachable)
 
 
 def _greedy_fit(target: int, widths: list[int]) -> tuple[list[int], int]:
@@ -255,7 +310,6 @@ def optimize_column(element: StructuralElement, panel_height_mm: float) -> Eleme
 
     # Collect all panels
     panel_counts: dict[str, dict] = {}
-
     def _add_panels(combo: list[int], face_count: int, label_prefix=""):
         # face_count = number of identical faces (2 for columns)
         # rows = vertical stacking rows
@@ -329,12 +383,14 @@ def optimize_column(element: StructuralElement, panel_height_mm: float) -> Eleme
 
     return boq
 
-
 def optimize_wall(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
     """
     Compute formwork BOQ for a straight or junction wall.
 
-    Straight wall : 2 faces × length_mm, OC80 at 4 end corners.
+    Wall has 2 face pairs, same as a column:
+      - 2 faces of length_mm (front/back)
+      - 2 faces of width_mm (sides / thickness ends, where applicable)
+    Straight wall : OC80 at 4 end corners.
     L-junction    : add 1 IC100 per row at the inner corner.
     T-junction    : add 2 IC100 per row at both inner corners.
     C-junction    : add 2 IC100 per row; enclosed end uses OC like a column end.
@@ -346,21 +402,39 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
     rows = 1  # height is for area calculation only; never auto-stack
     boq.height_note = f"{panel_h}MM"
 
-    combo, spacer = find_panel_combination(element.length_mm)
-    if spacer > 0:
-        warnings.append(f"Wall face {element.length_mm}mm: spacer {spacer}mm.")
-    elif spacer < 0:
-        warnings.append(f"Wall face {element.length_mm}mm: overshoot {-spacer}mm.")
+    # --- LENGTH faces (2 faces, each length_mm wide) ---
+    len_combo, len_spacer = find_panel_combination(element.length_mm)
+    if len_spacer > 0:
+        warnings.append(f"Length face {element.length_mm}mm: spacer of {len_spacer}mm needed.")
+    elif len_spacer < 0:
+        warnings.append(f"Length face {element.length_mm}mm: overshoot of {-len_spacer}mm.")
+
+    # --- WIDTH faces (2 faces, each width_mm wide) ---
+    wid_combo, wid_spacer = find_panel_combination(element.width_mm)
+    if wid_spacer > 0:
+        warnings.append(f"Width face {element.width_mm}mm: spacer of {wid_spacer}mm needed.")
+    elif wid_spacer < 0:
+        warnings.append(f"Width face {element.width_mm}mm: overshoot of {-wid_spacer}mm.")
 
     panel_counts: dict[str, dict] = {}
 
-    # Flat panels — 2 main faces
-    counts = _count_panels(combo)
-    for width, cnt in counts.items():
-        key = f"{width}X{panel_h}"
-        total_qty = cnt * 2 * rows
-        panel_counts[key] = {'width': width, 'height': panel_h,
-                              'qty': total_qty, 'is_corner': False}
+    def _add_panels(combo: list[int], face_count: int):
+        # face_count = number of identical faces (2 for length, 2 for width)
+        total_multiplier = face_count * rows
+        counts = _count_panels(combo)
+        for width, cnt in counts.items():
+            key = f"{width}X{panel_h}"
+            total_qty = cnt * total_multiplier
+            if key in panel_counts:
+                panel_counts[key]['qty'] += total_qty
+            else:
+                panel_counts[key] = {
+                    'width': width, 'height': panel_h,
+                    'qty': total_qty, 'is_corner': False
+                }
+
+    _add_panels(len_combo, face_count=2)
+    _add_panels(wid_combo, face_count=2)
 
     # --- OC corners at straight ends ---
     jt = getattr(element, 'junction_type', JunctionType.NONE)
@@ -390,7 +464,7 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
                                  'qty': ic_qty, 'is_corner': True,
                                  'is_inner': True}
 
-    # Build PanelEntry list: IC first, then OC, then flat panels
+    # Build PanelEntry list: IC first, then OC, then flat panels sorted by width desc
     boq.panels = []
     if ic_key in panel_counts:
         d = panel_counts[ic_key]
@@ -414,12 +488,111 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
             size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
         ))
 
-    if spacer > 0:
-        boq.panels.append(_make_filler_entry(spacer, panel_h, face_count=2))
+    # Fill plates ensure: sum(panels) + fill = face_length so the math checks out.
+    if len_spacer > 0:
+        boq.panels.append(_make_filler_entry(len_spacer, panel_h, face_count=2))
+    if wid_spacer > 0:
+        boq.panels.append(_make_filler_entry(wid_spacer, panel_h, face_count=2))
 
-    boq.spacer_mm = max(spacer, 0)
+    boq.spacer_mm = max(len_spacer, wid_spacer, 0)
     boq.warnings = warnings
+
     return boq
+
+# def optimize_wall(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
+#     """
+#     Compute formwork BOQ for a straight or junction wall.
+
+#     Straight wall : 2 faces × length_mm, OC80 at 4 end corners.
+#     L-junction    : add 1 IC100 per row at the inner corner.
+#     T-junction    : add 2 IC100 per row at both inner corners.
+#     C-junction    : add 2 IC100 per row; enclosed end uses OC like a column end.
+#     """
+#     boq = ElementBOQ(element=element)
+#     warnings = []
+#     panel_h = int(round(panel_height_mm))
+
+#     rows = 1  # height is for area calculation only; never auto-stack
+#     boq.height_note = f"{panel_h}MM"
+
+#     # --- LENGTH faces (2 faces, each length_mm wide) ---
+#     len_combo, len_spacer = find_panel_combination(element.length_mm)
+#     print("this is wall optimizer combo", len_combo)
+#     if len_spacer > 0:
+#         warnings.append(f"Wall face {element.length_mm}mm: spacer {len_spacer}mm.")
+#     elif len_spacer < 0:
+#         warnings.append(f"Wall face {element.length_mm}mm: overshoot {len_spacer}mm.")
+
+#     # --- WIDTH faces (2 faces, each width_mm wide) ---
+
+#     panel_counts: dict[str, dict] = {}
+
+#     # Flat panels — 2 main faces
+#     counts = _count_panels(len_combo)
+#     for width, cnt in counts.items():
+#         key = f"{width}X{panel_h}"
+#         total_qty = cnt * 2 * rows
+#         panel_counts[key] = {'width': width, 'height': panel_h,
+#                               'qty': total_qty, 'is_corner': False}
+
+#     # --- OC corners at straight ends ---
+#     jt = getattr(element, 'junction_type', JunctionType.NONE)
+
+#     # Straight wall: 4 OC (2 ends × 2 faces)
+#     # C-shape: only 2 OC at the open end; enclosed end gets OC too = 4 total
+#     oc_qty = 4 * rows
+#     oc_key = f"OC{_oc()}X{panel_h}"
+#     panel_counts[oc_key] = {'width': _oc(), 'height': panel_h,
+#                              'qty': oc_qty, 'is_corner': True}
+
+#     # --- IC corners at junctions ---
+#     ic_qty = 0
+#     if jt == JunctionType.L:
+#         ic_qty = 2 * rows        # 1 junction × 2 faces
+#         warnings.append("L-shaped junction: IC100 panels added at inner corner.")
+#     elif jt == JunctionType.T:
+#         ic_qty = 4 * rows        # 2 junctions × 2 faces
+#         warnings.append("T-shaped junction: IC100 panels added at both inner corners.")
+#     elif jt == JunctionType.C:
+#         ic_qty = 4 * rows        # 2 inner corners of C-shape
+#         warnings.append("C/U-shaped wall: IC100 panels added at both inner corners.")
+
+#     ic_key = f"IC{_ic()}X{panel_h}"
+#     if ic_qty > 0:
+#         panel_counts[ic_key] = {'width': _ic(), 'height': panel_h,
+#                                  'qty': ic_qty, 'is_corner': True,
+#                                  'is_inner': True}
+
+#     # Build PanelEntry list: IC first, then OC, then flat panels
+#     boq.panels = []
+#     if ic_key in panel_counts:
+#         d = panel_counts[ic_key]
+#         boq.panels.append(PanelEntry(
+#             size_label=ic_key, width_mm=_ic(), height_mm=panel_h,
+#             quantity=d['qty'], is_corner=True, is_inner_corner=True
+#         ))
+
+#     boq.panels.append(PanelEntry(
+#         size_label=oc_key, width_mm=_oc(), height_mm=panel_h,
+#         quantity=panel_counts[oc_key]['qty'], is_corner=True
+#     ))
+
+#     flat_keys = sorted(
+#         [k for k in panel_counts if k not in (oc_key, ic_key)],
+#         key=lambda k: panel_counts[k]['width'], reverse=True
+#     )
+#     for k in flat_keys:
+#         d = panel_counts[k]
+#         boq.panels.append(PanelEntry(
+#             size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
+#         ))
+
+#     if spacer > 0:
+#         boq.panels.append(_make_filler_entry(spacer, panel_h, face_count=2))
+
+#     boq.spacer_mm = max(spacer, 0)
+#     boq.warnings = warnings
+#     return boq
 
 
 def optimize_box_culvert(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:

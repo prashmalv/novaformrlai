@@ -558,10 +558,8 @@ def parse_dxf_full(
                  'inch': 25.4, 'ft': 304.8}.get(unit_override.lower(), 1.0)
     else:
         scale = _detect_scale(doc, msp)
-
     dim_lookup = _build_dimension_lookup(msp, scale)
     texts      = _extract_text_entities(msp)
-
     # ── Collect ALL closed polylines for background rendering ────────────────
     all_polylines: list[list] = []
     for entity in msp:
@@ -579,7 +577,6 @@ def parse_dxf_full(
                 all_polylines.append([p1, p2])
             except Exception:
                 pass
-
     # ── Extract elements (reuse the full parse_dxf logic) ───────────────────
     elements_raw:   list = []
     bboxes_raw:     list[tuple] = []
@@ -632,12 +629,10 @@ def parse_dxf_full(
         annotated_wid = _find_annotated_dim(cx, cy, dim_lookup,
                                             radius=max(width_mm_raw, 3000),
                                             target_mm=width_mm_raw)
-
         text_dims = None
         if not annotated_len or not annotated_wid:
             text_dims = _find_dims_from_text(
                 cx, cy, texts, radius=max(length_mm_raw * 2, 2000))
-
         length_mm = round(annotated_len if annotated_len else
                           (text_dims[0] if text_dims else length_mm_raw))
         width_mm  = round(annotated_wid  if annotated_wid  else
@@ -683,7 +678,6 @@ def parse_dxf_full(
             notes=f"Layer: {layer}",
         ))
         bboxes_raw.append(bbox)  # raw DXF coords for viewer overlay
-
     # Merge by dimensions (keeps bboxes aligned by tracking indices)
     merged_elements, merged_bboxes = _merge_with_bboxes(elements_raw, bboxes_raw)
     return merged_elements, merged_bboxes, all_polylines, scale

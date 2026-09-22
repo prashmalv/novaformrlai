@@ -325,7 +325,6 @@ def load_catalog_widths():
         # if widths is empty, result stays as `default`
 
     except Exception as ex:
-        #print(f"Unable to load panel catalog: {ex}")
         result = default
 
     finally:
@@ -3122,7 +3121,6 @@ class MainWindow(QMainWindow):
                     detected_h = detect_panel_height(dxf_for_detect)
                 except Exception:
                     pass
-
             # ── Import Settings Confirmation ──────────────────────────────────
             try:
                 cur_ph = int(self.panel_height_combo.currentText())

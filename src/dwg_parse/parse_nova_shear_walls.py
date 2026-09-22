@@ -3,6 +3,8 @@ import re
 from src.dwg_parse.clean_text import _clean_mtext_full
 from src.dwg_parse.get_schedule_region import _get_schedule_regions
 from src.dwg_parse.parse_nova_schedule_table import parse_nova_schedule_table
+from src.dwg_parse.collect_attributes import _collect_attribute_texts
+from src.dwg_parse.is_annotation_layer import is_annotation_layer
 from src.models.element import StructuralElement, ElementType
 from src.engine.sharewall_accessories import _get_polygon_lengths
 
@@ -135,6 +137,17 @@ def parse_nova_shear_walls(
                 label_positions.append((pos.x, pos.y, cleaned))
         except Exception:
             continue
+
+    # Labels are not always TEXT/MTEXT — some drawings carry them as block
+    # attributes on an identification layer.  Unfilled template placeholders
+    # are dropped inside the helper.
+    for _ax, _ay, _araw in _collect_attribute_texts(msp):
+        try:
+            _acleaned = _clean_mtext_full(_araw)
+        except Exception:
+            continue
+        if _acleaned:
+            label_positions.append((_ax, _ay, _acleaned))
     
     # ── Count plan-area label occurrences (exclude schedule table area) ───────
     # Used as authoritative qty: how many times each label TEXT appears in
@@ -160,6 +173,9 @@ def parse_nova_shear_walls(
     sig_polys: list = []  # dict with points, bounding-box metadata, and vertex count
     for ent in msp:
         if ent.dxftype() != 'LWPOLYLINE':
+            continue
+        # Label bubbles and dimension strings are not formwork.
+        if is_annotation_layer(getattr(ent.dxf, 'layer', '')):
             continue
         try:
             pts = [(p[0], p[1]) for p in ent.get_points()]
@@ -462,6 +478,16 @@ def parse_nova_shear_walls(
 
     from scipy.optimize import linear_sum_assignment
 
+    # Nothing to match — the drawing carries no Nova shear-wall labels (some
+    # client drawings annotate elements with bare dimensions like "300x1660"
+    # instead).  An empty list becomes a 1-D array, and linear_sum_assignment
+    # demands a 2-D cost matrix, so calling it here raised
+    # "expected a matrix (2-D array), got a 1 array" and killed the whole
+    # import.  Return empty instead, so the caller falls back to the standard
+    # geometric parser the same way it does for any other unlabelled drawing.
+    if not distance_matrix:
+        return [], [], "No shear-wall labels found in drawing"
+
     rows, cols = linear_sum_assignment(distance_matrix)
 
     poly_label = {}
@@ -535,4 +561,3 @@ def parse_nova_shear_walls(
         return [], [], "Labels matched but no BOQ could be computed"
 
     return elements, boqs, None
-

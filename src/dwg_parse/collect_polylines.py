@@ -1,7 +1,13 @@
+from src.dwg_parse.is_annotation_layer import is_annotation_layer
+
+
 def _collect_polylines(msp) -> list[dict]:
     """Return list of polyline dicts with bbox info."""
     out = []
     for e in msp.query("LWPOLYLINE"):
+        # Label bubbles and dimension strings are not formwork.
+        if is_annotation_layer(getattr(e.dxf, 'layer', '')):
+            continue
         try:
             pts = list(e.get_points())
             if not pts:
