@@ -108,7 +108,7 @@ class LoginDialog(QDialog):
         right_col = QVBoxLayout()
         right_col.setSpacing(4)
 
-        version_label = QLabel("v1.0")
+        version_label = QLabel("v1.1")
         version_label.setFont(_ui_font(8))
         version_label.setStyleSheet(
             "color: rgba(255,255,255,0.65); background: transparent;")
