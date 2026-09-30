@@ -467,7 +467,9 @@ def _col_accessories_table( acc, no_sets: int, col,
     # ---------------------------------------------------------
     data_rows = [['Waller', acc.total_wallers, 'nos', no_sets, acc.total_wallers * no_sets ],
         ['Tie Rod', acc.total_tierods, 'nos', '', acc.total_tierods * no_sets ],
-        ['Anchor Nut', acc.total_anchor_nuts,'nos', '', acc.total_anchor_nuts * no_sets],]
+        ['Anchor Nut', acc.total_anchor_nuts,'nos', '', acc.total_anchor_nuts * no_sets],
+        [f'Waller Sizes (mm) :{acc.total_waller_dimensions}'],
+        [f'Tie Rod Sizes (mm) :{acc.total_tierod_dimensions}'],]
 
     # ---------------------------------------------------------
     # Build rows

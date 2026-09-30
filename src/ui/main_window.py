@@ -1623,23 +1623,26 @@ class _DXFWorker_nova(QThread):
                     })
                     return
                 # No Nova labels found — use standard geometric parser, same doc
-                detected, bboxes, polylines, scale = parse_dxf_full(
-                    self._path, self._casting_h, doc=_doc)
+                # detected, bboxes, polylines, scale = parse_dxf_full(
+                #     self._path, self._casting_h, doc=_doc)
                 self.finished.emit({
                     'mode': 'standard',
-                    'detected': detected, 'bboxes': bboxes,
-                    'polylines': polylines, 'scale': scale,
-                    'error': None, 'dxf_path': self._path,
+                    'detected': [], 'bboxes': [],
+                    'polylines': [], 'scale': 1.0,
+                    'error': '''Either the label or dimension along with label is missing in the uploaded drawing. 
+                    Please make required changes and upload the drawing again.''', 
+                    'dxf_path': self._path,
                 })
             else:
-                detected, bboxes, polylines, scale, err, dxf_path = parse_dwg_full(
-                    self._path, self._casting_h)
                 self.finished.emit({
-                    'mode': 'standard',
-                    'detected': detected, 'bboxes': bboxes,
-                    'polylines': polylines, 'scale': scale,
-                    'error': err, 'dxf_path': dxf_path,
-                })
+                        'mode': 'standard',
+                        'detected': [], 'bboxes': [],
+                        'polylines': [], 'scale': 1.0,
+                        'error': '''Either the label or dimension along with label is missing in the uploaded drawing. 
+                        Please make required changes and upload the drawing again.''', 
+                        'dxf_path': self._path,
+                    })
+               
         except Exception as ex:
             self.finished.emit({
                 'mode': 'standard',

@@ -181,6 +181,8 @@ def _accessories_block(ws, row, acc, no_sets, title, highlight_status,
         ('Waller',     acc.total_wallers,     'nos'),
         ('Tie Rod',    acc.total_tierods,     'nos'),
         ('Anchor Nut', acc.total_anchor_nuts, 'nos'),
+        (f'Waller Sizes (mm) :{acc.total_waller_dimensions}',"",""),
+        (f'Waller Sizes (mm) :{acc.total_tierod_dimensions}',"","")
     ]
     data_start = row
     for name, qty, uom in data:

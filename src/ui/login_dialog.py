@@ -108,7 +108,7 @@ class LoginDialog(QDialog):
         right_col = QVBoxLayout()
         right_col.setSpacing(4)
 
-        version_label = QLabel("v1.1")
+        version_label = QLabel("v1.2")
         version_label.setFont(_ui_font(8))
         version_label.setStyleSheet(
             "color: rgba(255,255,255,0.65); background: transparent;")
@@ -231,7 +231,7 @@ class LoginDialog(QDialog):
         footer_lbl.setContentsMargins(36, 0, 36, 0)
         vlay.addWidget(footer_lbl)
 
-        # Enter key → login
+        # Enter key → login 
         self._pw_edit.returnPressed.connect(self._do_login)
         self._user_edit.returnPressed.connect(self._pw_edit.setFocus)
 
