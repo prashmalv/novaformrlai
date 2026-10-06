@@ -51,21 +51,21 @@ def _get_tie_count_and_length(
 
         base_count = 5
 
-        inner_length_count = max(1, int(inner_length // 1100))
-        inner_width_count = max(1, int(inner_width // 1100))
+        inner_length_count = int((inner_length -100) // 1100)
+        inner_width_count = int((inner_width - 100) // 1100)
 
         required_inner_right_w = int((right_w + 720 + 499) // 500) * 500
         required_inner_left_w = int((left_w + 720 + 499) // 500) * 500
 
-        length_distribution_right = _get_length_distribution(
-            required_inner_right_w,
-            inner_length_count,
-        )
+        # length_distribution_right = _get_length_distribution(
+        #     required_inner_right_w,
+        #     inner_length_count,
+        # )
 
-        width_distribution_left = _get_length_distribution(
-            required_inner_left_w,
-            inner_width_count,
-        )
+        # width_distribution_left = _get_length_distribution(
+        #     required_inner_left_w,
+        #     inner_width_count,
+        # )
 
         total_count = (
             base_count
@@ -74,37 +74,60 @@ def _get_tie_count_and_length(
         )
 
         tie_length_distribution = Counter({
-            500: base_count
-        })
+            500: base_count})
+        if inner_length_count:
+            tie_length_distribution[required_inner_right_w] = inner_length_count
+        if inner_width_count:
+            tie_length_distribution[required_inner_left_w] = inner_width_count
 
-        tie_length_distribution.update(length_distribution_right)
-        tie_length_distribution.update(width_distribution_left)
+        # tie_length_distribution.update(length_distribution_right)
+        # tie_length_distribution.update(width_distribution_left)
 
         return total_count, dict(tie_length_distribution)
-
+    elif length_mm and width_mm and right_w and length_mm:
+        base_count = 4
+        length_count = int((length_mm -100) // 1100)
+        width_count = int((width_mm - 100) // 1100)
+        required_inner_right_w = int((right_w + 720 + 499) // 500) * 500
+        required_inner_left_w = int((left_w + 720 + 499) // 500) * 500
+        total_count = base_count + length_count + width_count
+        if required_inner_left_w == required_inner_right_w:
+            total_len_count = length_count + width_count
+            tie_length_distribution = Counter({
+                500: base_count,
+                required_inner_right_w:total_len_count,})
+        else:
+            tie_length_distribution = Counter({
+                        500: base_count})
+            if length_count:
+                tie_length_distribution[required_inner_right_w]= length_count
+            if width_count:
+                tie_length_distribution[required_inner_left_w]= width_count
+        return total_count, dict(tie_length_distribution)
     # ---------------------------------------------------------
     # Case 2: Width greater than 2280 mm
     # ---------------------------------------------------------
-    elif width_mm > 2280:
+    elif length_mm > 2280:
 
         base_count = 4
 
-        additional_count = int(length_mm // 1100)
+        additional_count = int((length_mm - 100) // 1100)
 
-        required_length = int((length_mm + 720+ 499) // 500) * 500
+        required_length = int((width_mm + 720+ 499) // 500) * 500
 
-        length_distribution = _get_length_distribution(
-            required_length,
-            additional_count,
-        )
+        # length_distribution = _get_length_distribution(
+        #     required_length,
+        #     additional_count,
+        # )
 
         total_count = base_count + additional_count
 
         tie_length_distribution = Counter({
-            500: base_count
-        })
+            500: base_count})
+        if additional_count:
+            tie_length_distribution[required_length] = additional_count
 
-        tie_length_distribution.update(length_distribution)
+        #tie_length_distribution.update(length_distribution)
 
         return total_count, dict(tie_length_distribution)
 
@@ -113,33 +136,55 @@ def _get_tie_count_and_length(
     # ---------------------------------------------------------
     else:
 
-        base_count = 4
+        #base_count = 4
+        l_count = max(1, int((length_mm - 1 + 1200) // 1200))
+        w_count = max(1, int((width_mm - 1 + 1200) // 1200))
+        #print("this is count l & w ", l_count, w_count, length_mm, width_mm)
 
-        length_count = max(1, int((length_mm - 1) // 1200))
-        width_count = max(1, int((width_mm - 1) // 1200))
+        length_count = max(1, int((length_mm) // 1200))
+        width_count = max(1, int((width_mm) // 1200))
 
         required_length = int((length_mm + 720 + 499) // 500) * 500
         required_width = int((width_mm + 720 + 499) // 500) * 500
 
-        length_distribution = _get_length_distribution(
-            required_length,
-            length_count,
-        )
+        length_distribution = _get_length_distribution(required_length,length_count,)
 
-        width_distribution = _get_length_distribution(
-            required_width,
-            width_count,
-        )
+        width_distribution = _get_length_distribution(required_width,width_count,)
 
-        total_count = (
-            base_count
-            + length_count
-            + width_count
-        )
+        if l_count == 2 and w_count == 2:
+            l_count +=1
+            w_count +=1
+            for k,v in length_distribution.items():
+                length_distribution[k] = (v * 2) +1
+            for k,v in width_distribution.items():
+                width_distribution[k] = (v * 2) +1
+        elif l_count ==2:
+            w_count = (w_count * 2) + 1
+            for k,v in length_distribution.items():
+                length_distribution[k] = (v * 2)
+            for k,v in width_distribution.items():
+                width_distribution[k] = (v * 2) +1
+        elif w_count ==2:
+            l_count = (l_count * 2) + 1
+            for k,v in length_distribution.items():
+                length_distribution[k] = (v * 2) + 1
+            for k,v in width_distribution.items():
+                width_distribution[k] = (v * 2)
 
-        tie_length_distribution = Counter({
-            500: base_count
-        })
+        else:
+            l_count = l_count * 2
+            for k,v in length_distribution.items():
+                length_distribution[k] = v * 2
+
+            w_count = w_count * 2
+            for k,v in width_distribution.items():
+                width_distribution[k]= v * 2
+        
+    
+        
+        total_count = (l_count + w_count)
+
+        tie_length_distribution = Counter()
 
         tie_length_distribution.update(length_distribution)
         tie_length_distribution.update(width_distribution)

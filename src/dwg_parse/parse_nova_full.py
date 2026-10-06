@@ -84,7 +84,7 @@ def parse_nova_full(
                 continue
 
     _pnf_sched_regions = _get_schedule_regions(_pnf_raw_texts)
-    #print("this is schedule regions :", _pnf_sched_regions)
+    #print("this is schedule regions and raw text :", _pnf_sched_regions, _pnf_raw_texts)
 
     def _pnf_in_table(lx: float, ly: float) -> bool:
         return any(rx0 <= lx <= rx1 and ry0 <= ly <= ry1
@@ -94,7 +94,6 @@ def parse_nova_full(
     _pnf_cnt = _PNFCtr()
     for _lx, _ly, _lt in _pnf_raw_texts:
         _lt_u = _lt.strip().upper()
-        # if re.match(r'^[A-Z]{1,3}\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):     regex is updated
         if re.match(r'^(?!H-?\d)[A-Z]{1,3}-?\d+[A-Z]?$', _lt_u) and not _pnf_in_table(_lx, _ly):
             _pnf_cnt[_lt_u] += 1
         elif re.match(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$', _lt_u) and not _pnf_in_table(_lx, _ly):

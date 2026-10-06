@@ -144,7 +144,7 @@ def compute_column_accessories(
             total_waller_row  = total_waller_lw + total_waller_lw
             # get tie rod lengths and count
             per_row_tie,per_row_tie_dimension = _get_tie_count_and_length(length1, width1)
-            rows = [WallerRow(pos, per_row_tie, total_waller_row) for pos in positions]
+            rows = [WallerRow(pos, per_row_tie , total_waller_row) for pos in positions]
             total_tie_rod = per_row_tie * len(rows)
             total_waller = total_waller_row * len(rows)
             total_waller_dimension = [{diameter: count * len(rows)} for item in total_waller_di_row for diameter, count in item.items()]
@@ -165,7 +165,6 @@ def compute_column_accessories(
             # calculate total waller
             total_waller_lw, total_waller_dia_lw = _get_total_waller_count(waller_count_leghts_list)
             per_row_tie,per_row_tie_dimension = _get_tie_count_and_length(left_length,right_width,inner_lenght, inner_width, left_w, right_w)
-            #total_waller_row  = total_waller_lw * 2
             rows = [WallerRow(pos, per_row_tie, total_waller_lw) for pos in positions]
             total_tie_rod = per_row_tie * len(rows)
             total_waller = total_waller_lw * len(rows)
@@ -176,7 +175,10 @@ def compute_column_accessories(
     
         else:  # len(hori_length) >=4 and len(verti_length) >=4: 
             total_vertices = hori_length + verti_length + diago_length
-            tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm)
+            ascend_total_vertics = sorted(total_vertices)
+            min_a = ascend_total_vertics[0]
+            min_b= ascend_total_vertics[1]
+            tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm,left_w=min_a, right_w=min_b)
             positions = _waller_positions(height_mm)
             wallers_count_length_list = _per_row_count_waller(length_mm,width_mm, total_vertices)
             # find total waller count

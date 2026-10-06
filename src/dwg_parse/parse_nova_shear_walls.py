@@ -137,7 +137,6 @@ def parse_nova_shear_walls(
                 label_positions.append((pos.x, pos.y, cleaned))
         except Exception:
             continue
-
     # Labels are not always TEXT/MTEXT — some drawings carry them as block
     # attributes on an identification layer.  Unfilled template placeholders
     # are dropped inside the helper.
@@ -168,6 +167,7 @@ def parse_nova_shear_walls(
         elif _SW_LABEL_RE_COMMA.match(_ltxt) and not _in_schedule_table(_lx, _ly):
             _raw_cnt[_ltxt.upper()] += 1
     _plan_label_cnt = dict(_raw_cnt)
+    #print("Label count :", _plan_label_cnt)
     # ── Collect all significant closed polylines ───────────────────────────
 
     sig_polys: list = []  # dict with points, bounding-box metadata, and vertex count
@@ -534,7 +534,7 @@ def parse_nova_shear_walls(
         #     elem_type = ElementType.COLUMN
         # else:
         #     elem_type = ElementType.SHEAR_WALL
-        # print("this is label type :", elem_type, label)
+        # print("this is label & pts :", label, pts)
         elem = StructuralElement(
             element_type=_elem_type(label),
             label=label,
