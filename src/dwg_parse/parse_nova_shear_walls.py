@@ -137,6 +137,7 @@ def parse_nova_shear_walls(
                 label_positions.append((pos.x, pos.y, cleaned))
         except Exception:
             continue
+
     # Labels are not always TEXT/MTEXT — some drawings carry them as block
     # attributes on an identification layer.  Unfilled template placeholders
     # are dropped inside the helper.
@@ -534,7 +535,7 @@ def parse_nova_shear_walls(
         #     elem_type = ElementType.COLUMN
         # else:
         #     elem_type = ElementType.SHEAR_WALL
-        # print("this is label & pts :", label, pts)
+        #print("this is label & pts :", label, pts)
         elem = StructuralElement(
             element_type=_elem_type(label),
             label=label,
