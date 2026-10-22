@@ -14,6 +14,9 @@ Complex wall junctions (T / L / C):
   T-shape : 2 extra IC100 at junction per row
   C-shape : 2 extra IC100 at junction per row (enclosed ends use OC)
 """
+
+from collections import Counter
+import re
 import json
 import os
 from typing import Optional
@@ -794,6 +797,7 @@ def optimize_polygon_element(
     oc_count: int,
     ic_count: int,
     product_height_mm: float,
+    hunch_list: list[str] = []
 ) -> 'ElementBOQ':
     """
     Generate BOQ for any polygon-shaped element (L-wall, T-wall, I-beam, etc.)
@@ -844,7 +848,7 @@ def optimize_polygon_element(
         elif face_spacer < 0:
             warnings.append(f"Face {face_i} ({net:.0f}mm): overshoot of {-face_spacer:.0f}mm.")
 
-    # Build PanelEntry list: IC first, then OC, then flat panels sorted width desc
+    # Build PanelEntry list: IC first, then OC,then hunch, then flat panels sorted width desc
     boq.panels = []
     if ic_count > 0 and ic_key in panel_counts:
         d = panel_counts[ic_key]
@@ -858,6 +862,16 @@ def optimize_polygon_element(
             size_label=oc_key, width_mm=_oc(), height_mm=panel_h,
             quantity=d['qty'], is_corner=True,
         ))
+    
+    if len(hunch_list) > 0:
+        hunch_dic = Counter(hunch_list)
+        for hunch,cnt in hunch_dic.items():
+            h_width = int(re.search(r'\d+', hunch).group())
+            boq.panels.append(PanelEntry(
+              size_label=f'{hunch}', width_mm=h_width, height_mm=panel_h,
+              quantity=cnt,is_corner=True,  
+            ))
+
     flat_keys = sorted(
         [k for k in panel_counts if not panel_counts[k].get('is_corner')],
         key=lambda k: panel_counts[k]['width'], reverse=True,
@@ -876,6 +890,7 @@ def optimize_polygon_element(
     boq.warnings = warnings
 
     boq.height_note = f"{panel_h}MM"
+    boq.hunch_list = list(hunch_list)
     return boq
 
 

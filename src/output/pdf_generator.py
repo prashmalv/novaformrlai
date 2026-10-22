@@ -253,9 +253,7 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:
     el        = boq.element
     height_mm = group['height_mm']
     no_sets   = max(1, el.quantity) * max(1, num_sets)
-    # label = el.label
-    # print("this is boq :", boq)
-    # print("This is el :",el, type(el))
+    #print("This is hunch :",boq.hunch_list)
 
     req_type = el.element_type.value.lower()
     dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
@@ -291,8 +289,11 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:
             filler_row_indices.append(len(data))
         else:
             plabel     = _fmt_panel(panel.size_label)
+            # print("this is panel label :", plabel)
             qty        = panel.quantity
             if "Inner Corner" in plabel:
+                unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 2)
+            elif "Hunch" in plabel:
                 unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 2)
             else:
                 unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 2)
@@ -664,6 +665,8 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
     for k, d in sorted(totals.items(), key=_sort):
         plabel = _fmt_panel(k)
         if "Inner Corner" in plabel:
+            unit_a = round(2 * d['w'] * d['h'] / 1_000_000, 2)
+        elif "Hunch" in plabel:
             unit_a = round(2 * d['w'] * d['h'] / 1_000_000, 2)
         else:
             unit_a = round(d['w'] * d['h'] / 1_000_000, 2)

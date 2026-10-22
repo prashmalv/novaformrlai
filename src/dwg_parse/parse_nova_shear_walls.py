@@ -59,8 +59,8 @@ def _classify_polygon_corners(pts: list,threshold: float = 201,) -> list:
         len_in = math.hypot(*e_in)
         len_out = math.hypot(*e_out)
 
-        if len_in == 0 or len_out == 0:
-            raise ValueError(f"Zero-length edge at vertex index {i}")
+        # if len_in == 0 or len_out == 0:
+        #     raise ValueError(f"Zero-length edge at vertex index {i}")
 
         cross = (e_in[0] * e_out[1] - e_in[1] * e_out[0])
         dot = (e_in[0] * e_out[0] + e_in[1] * e_out[1])
@@ -75,17 +75,17 @@ def _classify_polygon_corners(pts: list,threshold: float = 201,) -> list:
         short_edge = min(len_in, len_out) < threshold
 
         # Reflex/diagonal hunch angles observed in this drawing.
-        angled_hunch = (210 < angle < 240 or 300 < angle < 340 )
+        angled_hunch = (185 < angle < 265 or 275 < angle < 355 )    #  (210 < angle < 240 or 300 < angle < 340 )
 
         # Near-90-degree corner with a short adjacent edge.
         right_angle_hunch = (88 <= angle <= 93 and short_edge)
 
         if angled_hunch:
-            corners.append("Hunch200")
+            corners.append("Hunch 200")
             continue
         short_length = round(min(len_in, len_out))
         if right_angle_hunch:
-            corners.append(f"Hunch{short_length}")
+            corners.append(f"Hunch {short_length}")
             continue
 
         # Preserve original OC/IC classification.
@@ -111,9 +111,21 @@ def _compute_polygon_face_nets(pts: list, corners: list) -> list:
         p1 = pts[i]
         p2 = pts[(i + 1) % n]
         face_len = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+        next_i = (i + 1) % n
         deduct = (100 if corners[i] == 'IC100' else 0) + \
-                 (100 if corners[(i + 1) % n] == 'IC100' else 0)
-        nets.append(max(0, round(face_len) - deduct))
+                 (100 if corners[next_i] == 'IC100' else 0)
+        # Extract the numeric value from Hunch labels
+        number1 = 0
+        number2 = 0
+        h_corner1 = corners[i]
+        if h_corner1.startswith("H"):
+            number1 = int(re.search(r'\d+', h_corner1).group())
+
+        h_corner2 = corners[next_i]
+        if h_corner2.startswith("H"):
+            number2 = int(re.search(r'\d+', h_corner2).group())
+    
+        nets.append(max(0, round(face_len) - (deduct + number1 + number2)))
     return nets
 
 
@@ -561,11 +573,10 @@ def parse_nova_shear_walls(
         pts     = rep['pts']
         corners = _classify_polygon_corners(pts)
         f_nets  = _compute_polygon_face_nets(pts, corners)
-        #corners, f_nets = _compute_polygon_face_nets(pts,corners)
         oc_cnt  = corners.count('OC80')
         ic_cnt  = corners.count('IC100')
-        hunch_cnt = corners.count('Hunch')
-        print("Label, pts, corner, f_nets", label, corners, f_nets)
+        hunch_list = [corner for corner in corners if corner.startswith("H")]
+        # print("Label, pts, corner, f_nets", label, corners, f_nets)
         # Classify element type from bounding box
         long_mm  = max(rep['w'], rep['h'])
         short_mm = min(rep['w'], rep['h'])
@@ -592,6 +603,7 @@ def parse_nova_shear_walls(
             oc_count=oc_cnt,
             ic_count=ic_cnt,
             product_height_mm=product_height_mm,
+            hunch_list = hunch_list,
         )
 
         elements.append(elem)
