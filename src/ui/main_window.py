@@ -15,8 +15,9 @@ from PyQt6.QtWidgets import (
     QGroupBox, QScrollArea, QTextEdit, QSplitter,
     QHeaderView, QFrame, QSizePolicy, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QEvent, QTimer
-from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QEvent, QTimer, QRectF, QPointF
+from PyQt6.QtGui import (QFont, QColor, QPalette, QIcon, QPixmap,
+                         QPainter, QPen, QPolygonF)
 
 from src.models.element import (
     StructuralElement, ElementType, JunctionType, ProjectBOQ, ElementBOQ
@@ -130,6 +131,67 @@ GROUP_STYLE = f"""
         left: 12px;
     }}
 """
+
+_CHECKBOX_STYLE_CACHE = None
+
+
+def get_checkbox_style() -> str:
+    """Stylesheet that draws a clear box (unchecked) and a box with a tick (checked).
+
+    The two indicator images are painted once with QPainter and saved to the
+    temp folder, so no external asset files are needed. Must be called after
+    QApplication exists (i.e. while building the UI).
+    """
+    global _CHECKBOX_STYLE_CACHE
+    if _CHECKBOX_STYLE_CACHE:
+        return _CHECKBOX_STYLE_CACHE
+
+    import tempfile
+    size = 20
+    folder = Path(tempfile.gettempdir()) / "nova_ui_icons"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    def _paint(checked: bool) -> Path:
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(1.5, 1.5, size - 3, size - 3)
+        p.setPen(QPen(QColor(NOVA_ACCENT), 2))
+        p.setBrush(QColor(NOVA_ACCENT) if checked else QColor("white"))
+        p.drawRoundedRect(rect, 4, 4)
+        if checked:
+            pen = QPen(QColor("white"), 2.6)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolyline(QPolygonF([QPointF(5.5, 10.5),
+                                      QPointF(9, 14),
+                                      QPointF(14.8, 6.2)]))
+        p.end()
+        path = folder / ("cb_checked.png" if checked else "cb_unchecked.png")
+        pm.save(str(path))
+        return path
+
+    off = _paint(False).as_posix()
+    on = _paint(True).as_posix()
+    _CHECKBOX_STYLE_CACHE = f"""
+        QCheckBox {{
+            spacing: 8px;
+            font-size: 12px;
+            color: {NOVA_BLUE};
+        }}
+        QCheckBox::indicator {{
+            width: {size}px;
+            height: {size}px;
+        }}
+        QCheckBox::indicator:unchecked {{ image: url({off}); }}
+        QCheckBox::indicator:checked   {{ image: url({on}); }}
+        QCheckBox::indicator:unchecked:hover {{ background: {NOVA_LIGHT}; border-radius: 4px; }}
+    """
+    return _CHECKBOX_STYLE_CACHE
+
 
 TABLE_STYLE = f"""
     QTableWidget {{
@@ -1473,7 +1535,7 @@ class _DXFWorker(QThread):
                     doc=_doc,
                 )
                 if all_elements:
-                    #print("this is parse nova full")
+                    # print("this is parse nova full")
                     self.finished.emit({
                         'mode': 'nova',
                         'elements': all_elements, 'boqs': all_boqs, 'error': nova_err,
@@ -2536,6 +2598,7 @@ class MainWindow(QMainWindow):
 
         self.gst_check = QCheckBox("Include GST @ 18%")
         self.gst_check.setChecked(True)
+        #self.gst_check.setStyleSheet(get_checkbox_style())
         f_charges.addRow("GST:", self.gst_check)
 
         self.freight_spin = QDoubleSpinBox()
@@ -2551,6 +2614,13 @@ class MainWindow(QMainWindow):
         grp.setStyleSheet(GROUP_STYLE)
         g = QVBoxLayout(grp)
         g.setSpacing(12)
+
+        # Export with Accessories
+        self.exp_acc_checkbox = QCheckBox("Export With Accessories")
+        self.exp_acc_checkbox.setChecked(True)
+        self.exp_acc_checkbox.setStyleSheet(get_checkbox_style())
+        self.exp_acc_checkbox.setToolTip("Include accessories (Waller, Tie rod, etc.) in exported files")
+        g.addWidget(self.exp_acc_checkbox)
 
         btn_boq_pdf = QPushButton("  Export BOQ PDF")
         btn_boq_pdf.setStyleSheet(BTN_STYLE)
@@ -4144,6 +4214,14 @@ class MainWindow(QMainWindow):
                     )
             self.acc_warn_label.setText("\n".join(warnings) if warnings else "")
 
+    def _export_with_accessories(self) -> bool:
+        """True if 'Export With Accessories' is ticked, else False."""
+        return self.exp_acc_checkbox.isChecked()
+
+    def _get_export_acc_agg(self):
+        """Accessory aggregate for exports; None when the checkbox is off."""
+        return self._acc_agg if self._export_with_accessories() else None
+
     def _export_pdf(self):
         if not self._project or not self._boqs:
             QMessageBox.warning(self, "No Data",
@@ -4157,8 +4235,10 @@ class MainWindow(QMainWindow):
 
         try:
             boq_no = self.boq_number_edit.text().strip() or None
+            exp_acc_status = self._export_with_accessories()
+            acc_agg = self._get_export_acc_agg()
             out = generate_boq_pdf(self._project, path,
-                                   acc_agg=self._acc_agg, boq_number=boq_no)
+                                   acc_agg=acc_agg, boq_number=boq_no, exp_acc_status=exp_acc_status)
             self.export_log.append(f"✓ BOQ PDF saved: {out}")
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
@@ -4184,7 +4264,7 @@ class MainWindow(QMainWindow):
             qtn_no = self.qtn_number_edit.text().strip() or None
             out = generate_quotation_pdf(
                 self._project, path,
-                acc_agg=self._acc_agg,
+                acc_agg=self._get_export_acc_agg(),
                 qtn_number=qtn_no,
                 price_per_sqm=self._project.panel_rate_per_sqm,
                 freight=self._project.freight_amount,
@@ -4214,15 +4294,17 @@ class MainWindow(QMainWindow):
         try:
             boq_no = self.boq_number_edit.text().strip() or None
             qtn_no = self.qtn_number_edit.text().strip() or None
+            exp_acc_status = self._export_with_accessories()
             out = generate_excel_boq(
                 self._project,
                 path,
                 price_per_sqm=self._project.panel_rate_per_sqm,
                 freight_amount=self._project.freight_amount,
                 gst_rate=0.18 if self._project.gst_enabled else 0.0,
-                acc_agg=self._acc_agg,
+                acc_agg=self._get_export_acc_agg(),
                 boq_number=boq_no,
                 qtn_number=qtn_no,
+                acc_status=exp_acc_status,
             )
             self.export_log.append(f"✓ Excel saved: {out}")
             from src.auth.auth_manager import log_action as _log
@@ -4368,7 +4450,7 @@ class MainWindow(QMainWindow):
         try:
             out = generate_project_layout(
                 self._elements, self._boqs, panel_h,
-                output_path=path, acc_agg=self._acc_agg
+                output_path=path, acc_agg=self._get_export_acc_agg()
             )
             self.unsetCursor()
             self.export_log.append(f"✓ Layout PDF saved: {out}")

@@ -24,41 +24,77 @@ _COLUMN_PREFIX = re.compile(r'^C\d', re.I)
 def _elem_type(label: str) -> 'ElementType':
         return ElementType.COLUMN if _COLUMN_PREFIX.match(label) else ElementType.SHEAR_WALL
 
-def _classify_polygon_corners(pts: list) -> list:
+
+def _classify_polygon_corners(pts: list,threshold: float = 201,) -> list:
     """
-    Classify each polygon vertex as 'OC80' (convex) or 'IC100' (concave).
+    Classify polygon vertices as OC80, IC100, or Hunch.
 
-    Cross-product of consecutive edges determines convex vs concave.  The sign
-    convention depends on whether the polygon is wound CCW (positive signed
-    area) or CW (negative).  We detect the winding direction first and flip
-    the cross-product interpretation for CW polygons so both orientations
-    produce correct OC/IC labels.
-
-    Verified against SW6 (OC×5, IC×1) and SW11 (OC×10, IC×6).
+    Rules:
+      - Angles around 90 degrees:
+          * Hunch if either adjacent edge < 200 mm.
+          * Otherwise retain OC80/IC100.
+      - Reflex angles:
+          * Hunch for the angled corners identified by the
+            project rule (approximately 210-240 or 300-340 degrees).
+      - Other corners retain OC80/IC100 classification.
     """
     n = len(pts)
-    # Shoelace signed area — positive = CCW, negative = CW
-    signed_area = sum(
-        pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]
-        for i in range(n)
-    )
-    is_ccw = signed_area > 0
 
+    signed_area = sum(
+        pts[i][0] * pts[(i + 1) % n][1]
+        - pts[(i + 1) % n][0] * pts[i][1]
+        for i in range(n))
+
+    is_ccw = signed_area > 0
     corners = []
+
     for i in range(n):
         prev = pts[(i - 1) % n]
         curr = pts[i]
-        nxt  = pts[(i + 1) % n]
-        e_in  = (curr[0] - prev[0], curr[1] - prev[1])
-        e_out = (nxt[0]  - curr[0], nxt[1]  - curr[1])
-        cross = e_in[0] * e_out[1] - e_in[1] * e_out[0]
-        if is_ccw:
-            corners.append('IC100' if cross < 0 else 'OC80')
-        else:
-            # CW polygon: cross-product signs are flipped relative to CCW
-            corners.append('OC80' if cross < 0 else 'IC100')
-    return corners
+        nxt = pts[(i + 1) % n]
 
+        e_in = (curr[0] - prev[0], curr[1] - prev[1])
+        e_out = ( nxt[0] - curr[0],nxt[1] - curr[1])
+
+        len_in = math.hypot(*e_in)
+        len_out = math.hypot(*e_out)
+
+        if len_in == 0 or len_out == 0:
+            raise ValueError(f"Zero-length edge at vertex index {i}")
+
+        cross = (e_in[0] * e_out[1] - e_in[1] * e_out[0])
+        dot = (e_in[0] * e_out[0] + e_in[1] * e_out[1])
+
+        turn_angle = math.degrees(math.atan2(abs(cross), dot))
+
+        if is_ccw:
+            angle = 180 - turn_angle if cross > 0 else 180 + turn_angle
+        else:
+            angle = 180 + turn_angle if cross > 0 else 180 - turn_angle
+
+        short_edge = min(len_in, len_out) < threshold
+
+        # Reflex/diagonal hunch angles observed in this drawing.
+        angled_hunch = (210 < angle < 240 or 300 < angle < 340 )
+
+        # Near-90-degree corner with a short adjacent edge.
+        right_angle_hunch = (88 <= angle <= 93 and short_edge)
+
+        if angled_hunch:
+            corners.append("Hunch200")
+            continue
+        short_length = round(min(len_in, len_out))
+        if right_angle_hunch:
+            corners.append(f"Hunch{short_length}")
+            continue
+
+        # Preserve original OC/IC classification.
+        if is_ccw:
+            corners.append("IC100" if cross < 0 else "OC80")
+        else:
+            corners.append("OC80" if cross < 0 else "IC100")
+
+    return corners
 
 
 def _compute_polygon_face_nets(pts: list, corners: list) -> list:
@@ -79,6 +115,7 @@ def _compute_polygon_face_nets(pts: list, corners: list) -> list:
                  (100 if corners[(i + 1) % n] == 'IC100' else 0)
         nets.append(max(0, round(face_len) - deduct))
     return nets
+
 
 def parse_nova_shear_walls(
     dxf_path: str,
@@ -524,9 +561,11 @@ def parse_nova_shear_walls(
         pts     = rep['pts']
         corners = _classify_polygon_corners(pts)
         f_nets  = _compute_polygon_face_nets(pts, corners)
+        #corners, f_nets = _compute_polygon_face_nets(pts,corners)
         oc_cnt  = corners.count('OC80')
         ic_cnt  = corners.count('IC100')
-
+        hunch_cnt = corners.count('Hunch')
+        print("Label, pts, corner, f_nets", label, corners, f_nets)
         # Classify element type from bounding box
         long_mm  = max(rep['w'], rep['h'])
         short_mm = min(rep['w'], rep['h'])

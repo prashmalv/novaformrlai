@@ -243,7 +243,7 @@ def _make_diagram_image(boq: ElementBOQ, width_mm: float = 52, height_mm: float 
         return None
 
 
-def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
+def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:bool = False) -> list:
     """
     Build the per-element-group BOQ table matching the new template exactly.
     Columns: PRODUCT | Qty | UOM | No of Set | Total Qty | Unit Area (SqM) | Total Area (SqM)
@@ -398,19 +398,20 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
         items.append(Paragraph(f"  ⚠ {w}", _styles()['warn']))
 
     # ── Column accessories mini-table ─────────────────────────────────────────
-    if el.is_column:
-        from src.engine.column_accessories import compute_column_accessories
-        acc, highlight_status = compute_column_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
-        items.append(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES', highlight_status))
-        #items.extend(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES', highlight_status))
+    if acc_status:
+        if el.is_column:
+            from src.engine.column_accessories import compute_column_accessories
+            acc, highlight_status = compute_column_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
+            items.append(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES', highlight_status))
+            #items.extend(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES', highlight_status))
 
-    items.append(Spacer(1, 3*mm))
-    # ── Column accessories mini-table ─────────────────────────────────────────
-    if el.is_wall:
-        from src.engine.sharewall_accessories import compute_sharewall_accessories
-        acc, highlight_status = compute_sharewall_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
-        items.append(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
-        #items.extend(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
+        items.append(Spacer(1, 3*mm))
+        # ── Column accessories mini-table ─────────────────────────────────────────
+        if el.is_wall:
+            from src.engine.sharewall_accessories import compute_sharewall_accessories
+            acc, highlight_status = compute_sharewall_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
+            items.append(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
+            #items.extend(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
 
     items.append(Spacer(1, 3*mm))
     return items
@@ -702,7 +703,7 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
 
 
 def generate_boq_pdf(project: ProjectBOQ, output_path: str,
-                     acc_agg: dict = None, boq_number: str = None) -> str:
+                     acc_agg: dict = None, boq_number: str = None, exp_acc_status: bool = False) -> str:
     """
     Generate FORMWORK BOQ PDF matching the updated Nova template.
     Sections: grouped element tables → ACCESSORIES → SUMMARY
@@ -743,7 +744,7 @@ def generate_boq_pdf(project: ProjectBOQ, output_path: str,
     #print (" in pdf generator = groups", groups)
     n_sets = max(1, getattr(project, 'num_sets', 1))
     for group in groups:
-        block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc)
+        block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc, acc_status=exp_acc_status)
         story.append(KeepTogether(block[:3]))   # try to keep table together
         story += block[3:]
 

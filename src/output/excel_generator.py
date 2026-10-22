@@ -210,7 +210,7 @@ def _accessories_block(ws, row, acc, no_sets, title, highlight_status,
 # BOQ sheet
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
+def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None, acc_status: bool = False):
     ws  = wb.create_sheet("FORMWORK BOQ")
     row = 1
 
@@ -446,19 +446,20 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
         # Same computation modules as pdf_generator._boq_element_table — the
         # acc object and highlight_status flag are identical, only the table
         # rendering differs (openpyxl cells vs. reportlab Table).
-        if el.is_column:
-            from src.engine.column_accessories import compute_column_accessories
-            acc, highlight_status = compute_column_accessories(
-                el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
-            row = _accessories_block(ws, row, acc, no_sets, 'COLUMN ACCESSORIES', highlight_status)
-            row += 1   # gap after block
+        if acc_status:
+            if el.is_column:
+                from src.engine.column_accessories import compute_column_accessories
+                acc, highlight_status = compute_column_accessories(
+                    el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
+                row = _accessories_block(ws, row, acc, no_sets, 'COLUMN ACCESSORIES', highlight_status)
+                row += 1   # gap after block
 
-        if el.is_wall:
-            from src.engine.sharewall_accessories import compute_sharewall_accessories
-            acc, highlight_status = compute_sharewall_accessories(
-                el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
-            row = _accessories_block(ws, row, acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status)
-            row += 1   # gap after block
+            if el.is_wall:
+                from src.engine.sharewall_accessories import compute_sharewall_accessories
+                acc, highlight_status = compute_sharewall_accessories(
+                    el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
+                row = _accessories_block(ws, row, acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status)
+                row += 1   # gap after block
 
         row += 2   # blank gap after block
 
@@ -845,6 +846,7 @@ def generate_excel_boq(
     acc_agg: dict = None,
     boq_number: str = None,
     qtn_number: str = None,
+    acc_status: bool = False
 ) -> str:
     """
     Generate Excel file with three sheets:
@@ -858,7 +860,7 @@ def generate_excel_boq(
     # Attach acc_agg to project temporarily for BOQ sheet
     project._acc_agg = acc_agg or {}
 
-    _write_boq_sheet(wb, project, boq_number=boq_number)
+    _write_boq_sheet(wb, project, boq_number=boq_number, acc_status= acc_status)
     _write_quotation_sheet(wb, project, price_per_sqm=price_per_sqm,
                            freight=freight_amount, gst_rate=gst_rate,
                            qtn_number=qtn_number, acc_agg=acc_agg)
