@@ -522,8 +522,14 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None, acc_status
 
     def _sort_key(kv):
         k = kv[0]
-        return (0 if k.startswith('OC') or k.startswith('IC') else 1,
-                -totals[k]['w'])
+        return (
+        0 if k.startswith('IC')
+        else 1 if k.startswith('OC')
+        else 2 if k.startswith('H')
+        else 3,
+        -totals[k]['w'])
+        # return (0 if k.startswith('OC') or k.startswith('IC') else 1,
+        #         -totals[k]['w'])
 
     grand_area = 0.0
     for k, d in sorted(totals.items(), key=_sort_key):
