@@ -81,7 +81,7 @@ def _classify_polygon_corners(pts: list,threshold: float = 201,) -> list:
         right_angle_hunch = (88 <= angle <= 93 and short_edge)
 
         if angled_hunch:
-            corners.append("Hunch 200")
+            corners.append(f"Hunch 200")
             continue
         short_length = round(min(len_in, len_out))
         if right_angle_hunch:

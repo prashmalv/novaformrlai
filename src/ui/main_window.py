@@ -3948,9 +3948,12 @@ class MainWindow(QMainWindow):
                     panel.height_mm = panel_h
                     panel.area_sqm = round((panel.width_mm * panel_h) / 1_000_000, 6)
                     # Relabel: preserve prefix (OC80, IC100, 600, …) and replace height suffix
-                    _m = _re.match(r'^(.+?)X\d+(?:\.\d+)?$', panel.size_label)
+                    #_m = _re.match(r'^(.+?)X\d+(?:\.\d+)?$', panel.size_label)
+                    _m = _re.match(r'^(.+?)([Xx*])\s*\d+(?:\.\d+)?$',panel.size_label)
                     if _m:
-                        panel.size_label = f"{_m.group(1)}X{int(panel_h)}"
+                        # panel.size_label = f"{_m.group(1)}X{int(panel_h)}"
+                        panel.size_label = f"{_m.group(1)}{_m.group(2)}{int(panel_h)}"
+
         self._project = ProjectBOQ(
             project_name      = self.project_name_edit.text().strip(),
             client_name       = self.client_name_edit.text().strip(),

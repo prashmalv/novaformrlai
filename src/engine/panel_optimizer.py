@@ -868,7 +868,7 @@ def optimize_polygon_element(
         for hunch,cnt in hunch_dic.items():
             h_width = int(re.search(r'\d+', hunch).group())
             boq.panels.append(PanelEntry(
-              size_label=f'{hunch}', width_mm=h_width, height_mm=panel_h,
+              size_label=f'{hunch}*{panel_h}', width_mm=h_width, height_mm=panel_h,
               quantity=cnt,is_corner=True,  
             ))
 

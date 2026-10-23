@@ -253,7 +253,6 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:
     el        = boq.element
     height_mm = group['height_mm']
     no_sets   = max(1, el.quantity) * max(1, num_sets)
-    #print("This is hunch :",boq.hunch_list)
 
     req_type = el.element_type.value.lower()
     dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
@@ -289,7 +288,6 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:
             filler_row_indices.append(len(data))
         else:
             plabel     = _fmt_panel(panel.size_label)
-            # print("this is panel label :", plabel)
             qty        = panel.quantity
             if "Inner Corner" in plabel:
                 unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 2)
@@ -656,8 +654,15 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
 
     def _sort(kv):
         k = kv[0]
-        return (0 if k.startswith('OC') or k.startswith('IC') else 1,
-                -totals[k]['w'])
+        return (
+        0 if k.startswith('IC')
+        else 1 if k.startswith('OC')
+        else 2 if k.startswith('H')
+        else 3,
+        -totals[k]['w'])
+
+        # return (0 if k.startswith('OC') or k.startswith('IC') else 1,
+        #         -totals[k]['w'])
 
     cw = [CW * 0.35, CW * 0.16, CW * 0.10, CW * 0.20, CW * 0.19]
     rows = [['PRODUCT', 'Total Quantity', 'UOM', 'Unit Area (SqM)', 'Total Area (SqM)']]
@@ -711,7 +716,6 @@ def generate_boq_pdf(project: ProjectBOQ, output_path: str,
     Generate FORMWORK BOQ PDF matching the updated Nova template.
     Sections: grouped element tables → ACCESSORIES → SUMMARY
     """
-    #print("in pdf gen, project =", project)
     boq_num  = boq_number or f"OP-ID-{abs(hash(project.project_name)) % 10000:04d}"
     date_str = project.date or date.today().strftime("%d/%m/%Y")
     st = _styles()
