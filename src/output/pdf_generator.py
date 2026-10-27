@@ -242,7 +242,7 @@ def _make_diagram_image(boq: ElementBOQ, width_mm: float = 52, height_mm: float 
     except Exception:
         return None
 
-
+import traceback
 def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:bool = False) -> list:
     """
     Build the per-element-group BOQ table matching the new template exactly.
@@ -275,42 +275,44 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:
     total_area = 0.0
     first_panel_row = True
     filler_row_indices = []   # track rows that are fill plates (for grey styling)
-
     for panel in boq.panels:
-        is_filler = getattr(panel, 'is_filler', False)
-        if is_filler:
-            plabel    = f"Fill Plate {int(panel.width_mm)}mm (spacer)"
-            unit_area = 0.0
-            row_area  = 0.0
-            qty       = panel.quantity
-            total_qty = qty * no_sets
-            row = [plabel, f"{qty:.2f}", "nos", "", f"{total_qty:.2f}", "—", "—"]
-            filler_row_indices.append(len(data))
-        else:
-            plabel     = _fmt_panel(panel.size_label)
-            qty        = panel.quantity
-            if "Inner Corner" in plabel:
-                unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 3)
-            elif "Hunch" in plabel:
-                unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 3)
+        try:
+            is_filler = getattr(panel, 'is_filler', False)
+            if is_filler:
+                plabel    = f"Fill Plate {int(panel.width_mm)}mm (spacer)"
+                unit_area = 0.0
+                row_area  = 0.0
+                qty       = panel.quantity
+                total_qty = qty * no_sets
+                row = [plabel, f"{qty:.2f}", "nos", "", f"{total_qty:.2f}", "—", "—"]
+                filler_row_indices.append(len(data))
             else:
-                unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 3)
-            total_qty  = qty * no_sets
-            row_area   = round(unit_area * total_qty, 3)
-            total_area += row_area
-            row = [
-                plabel,
-                f"{qty:.2f}",
-                "nos",
-                str(no_sets) if first_panel_row else "",
-                f"{total_qty:.2f}",
-                f"{unit_area:.3f}",
-                f"{row_area:.3f}",
-            ]
-        data.append(row)
-        if not is_filler:
-            first_panel_row = False
-
+                plabel     = _fmt_panel(panel.size_label)
+                qty        = panel.quantity
+                if "Inner Corner" in plabel:
+                    unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 3)
+                elif "Hunch" in plabel:
+                    unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 3)
+                else:
+                    unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 3)
+                total_qty  = qty * no_sets
+                row_area   = round(unit_area * total_qty, 3)
+                total_area += row_area
+                row = [
+                    plabel,
+                    f"{qty:.2f}",
+                    "nos",
+                    str(no_sets) if first_panel_row else "",
+                    f"{total_qty:.2f}",
+                    f"{unit_area:.3f}",
+                    f"{row_area:.3f}",
+                ]
+            data.append(row)
+            if not is_filler:
+                first_panel_row = False
+        except Exception:
+            traceback.print_exc()
+            raise
     # Total Area row
     data.append(['', '', '', '', '', 'Total Area (in SqM)', f"{total_area:.3f}"])
 
@@ -369,7 +371,6 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:
     diag_h_mm = 58
     diag_img  = _make_diagram_image(boq, width_mm=DIAG_W / mm, height_mm=diag_h_mm,
                                     dxf_doc=dxf_doc)
-
     if diag_img is not None:
         diag_header = Paragraph(
             "Floor Plan",
@@ -748,7 +749,6 @@ def generate_boq_pdf(project: ProjectBOQ, output_path: str,
             pass
 
     groups = _group_boqs(project.element_boqs)
-    #print (" in pdf generator = groups", groups)
     n_sets = max(1, getattr(project, 'num_sets', 1))
     for group in groups:
         block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc, acc_status=exp_acc_status)

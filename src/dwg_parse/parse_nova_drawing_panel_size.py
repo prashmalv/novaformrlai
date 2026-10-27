@@ -35,6 +35,11 @@ _NOVA_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_SHEAR_WALL_LABEL_RE = re.compile(
+    r'^([A-GI-Z]{1,2})[-_\s]*\d+[-_\s]+(\d+)\s*[xX]\s*(\d+)$',
+    re.IGNORECASE,
+)
+
 _NOVA_WxH_RE = re.compile(r'^(\d+)[xX](\d+)$')  # e.g. "300X2470"
 
 def _rcol_panels_from_elev(
@@ -191,7 +196,6 @@ def _panels_around_column(
     return entries
 
 
-
 def parse_nova_drawing(
     dxf_path: str,
     casting_height_mm: float = 2470.0,
@@ -254,7 +258,6 @@ def parse_nova_drawing(
 
         # L-COL parentheses format first: L-COL:-(400X3000)+(400X1500)
         m2 = _L_COL_RE.search(txt)
-        #print("m2", m2)
         if m2:
             floor_str = (m2.group(1) or "").upper()
             leg1_w, leg1_h = int(m2.group(2)), int(m2.group(3))
@@ -270,7 +273,20 @@ def parse_nova_drawing(
                 'dim2': min(leg1_w, leg2_w),
             })
             continue
-
+        m1 = _SHEAR_WALL_LABEL_RE.search(txt)
+        if m1:
+            etype_raw = m1.group(1 or '').upper()
+            dim1 = int(m1.group(2))
+            dim2 = int(m1.group(3))
+            seen_pos.add(pos_key)
+            col_labels.append({
+                'x': tx, 'y': ty, 'raw_text': txt,
+                'floor': '',
+                'etype': etype_raw,
+                'is_lcol_paren': False,
+                'dim1': dim1, 'dim2': dim2,
+            })
+            continue
         # Regular / R-COL / plain L-COL format
         m = _NOVA_LABEL_RE.search(txt)
         if not m:
@@ -294,7 +310,6 @@ def parse_nova_drawing(
             "'R-COL:-Ø1200X2470', 'L-COL:-(400X3000)+(400X1500)'\n"
             f"Sample texts found: {[t for _, _, t in texts[:10]]}"
         )
-    #print(" col labels :", col_labels)
     # ── Step 2: for each label, find column outline and read panels ───────────
     elements: list[StructuralElement] = []
     boqs:     list[ElementBOQ] = []
@@ -307,6 +322,11 @@ def parse_nova_drawing(
         etype_raw = lbl['etype']
         is_lcol   = lbl.get('is_lcol_paren', False)
         tol       = 0.20  # 20 % dimensional tolerance for outline matching
+        raw_text1 = lbl.get('raw_text', '').upper().strip()
+        if raw_text1.startswith("C"):
+            e_type = ElementType.COLUMN
+        else:
+            e_type = ElementType.SHEAR_WALL
 
         # ── Find best matching column outline polyline ────────────────────
         best_col: dict | None = None
@@ -318,6 +338,8 @@ def parse_nova_drawing(
             if p['w'] < 150 or p['h'] < 150:
                 continue
             if p['cy'] < ly - 500:  # outline must be above (or near) the label
+                continue
+            if p['cx'] < lx - 500:  # outline must be above (or near) the label
                 continue
 
             pw, ph = p['w'], p['h']
@@ -375,7 +397,7 @@ def parse_nova_drawing(
                 f"{int(length_mm)}x{int(width_mm)}"
             )
         else:
-            elem_type = ElementType.COLUMN
+            elem_type = e_type
             notes     = ""
             length_mm = float(max(dim1, dim2))
             width_mm  = float(min(dim1, dim2))
@@ -400,12 +422,14 @@ def parse_nova_drawing(
             # Round column: no 80mm plan-view panels; use WxH elevation labels
             panel_entries = _rcol_panels_from_elev(lx, ly, texts, product_height_mm)
         elif best_col is not None:
+            print("panel elif")
             panel_entries = _panels_around_column(
                 best_col, polylines, texts,
                 casting_height_mm=casting_height_mm,
                 product_height_mm=product_height_mm,
             )
         else:
+            print("panel esle")
             panel_entries = []
 
         if not panel_entries:

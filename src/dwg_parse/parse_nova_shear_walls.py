@@ -20,12 +20,15 @@ except ImportError:
 _SW_LABEL_RE = re.compile(r'^(?!H-?\d)[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
 _SW_LABEL_RE_COMMA = re.compile(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$')
 
-_COLUMN_PREFIX = re.compile(r'^C\d', re.I)
+# _COLUMN_PREFIX = re.compile(r'^C\d', re.I)
+_COLUMN_PREFIX = re.compile(r'^C[-_ ]?\d', re.I)
+
 def _elem_type(label: str) -> 'ElementType':
+        label = label.strip()
         return ElementType.COLUMN if _COLUMN_PREFIX.match(label) else ElementType.SHEAR_WALL
 
 
-def _classify_polygon_corners(pts: list,threshold: float = 201,) -> list:
+def _classify_polygon_corners(pts: list,threshold: float = 199,) -> list:
     """
     Classify polygon vertices as OC80, IC100, or Hunch.
 
@@ -576,7 +579,7 @@ def parse_nova_shear_walls(
         oc_cnt  = corners.count('OC80')
         ic_cnt  = corners.count('IC100')
         hunch_list = [corner for corner in corners if corner.startswith("H")]
-        # print("Label, pts, corner, f_nets", label, corners, f_nets)
+        #print("Label, pts", label)
         # Classify element type from bounding box
         long_mm  = max(rep['w'], rep['h'])
         short_mm = min(rep['w'], rep['h'])
@@ -585,7 +588,7 @@ def parse_nova_shear_walls(
         #     elem_type = ElementType.COLUMN
         # else:
         #     elem_type = ElementType.SHEAR_WALL
-        #print("this is label & pts :", label, pts)
+        #print("this is label type and label :",_elem_type(label), label)
         elem = StructuralElement(
             element_type=_elem_type(label),
             label=label,

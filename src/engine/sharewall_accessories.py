@@ -175,69 +175,84 @@ def compute_sharewall_accessories(
     Returns a ColumnAccessoryResult with per-row breakdown and totals.
     The caller should multiply totals by element.quantity for the project BOQ.
     """
-    # get all vertices length
-    hori_length, verti_length, diago_length = _get_polygon_lengths(polygon_pts)
-    length4 = hori_length + verti_length + diago_length
-    length41 = hori_length + verti_length
-    if len(length4) == 4 or len(length41) ==4:
-        lengths_lst_sum = hori_length + verti_length
-        if len(lengths_lst_sum) == 4:
-            lengths_lst = lengths_lst_sum
-        else:
-            lengths_lst = length4
-        length1, width1 = max(lengths_lst), min(lengths_lst)
-        positions = _waller_positions(height_mm)
-        waller_count_leghts_list = _per_row_count_waller(length1, width1)
-        total_waller_lw, total_dia_list = _get_total_waller_count(waller_count_leghts_list)
-        total_waller_row  = total_waller_lw + total_waller_lw
-        total_dia_list_row = [{diameter: count * 2} for item in total_dia_list for diameter, count in item.items()]
-        # get tie rod lengths and count
-        per_row_tie,per_row_tie_dimension = _get_tie_count_and_length(length1, width1)
-        rows = [WallerRow(pos, per_row_tie, total_waller_row) for pos in positions]
-        total_tie_rod = per_row_tie * len(rows)
-        total_waller = total_waller_row * len(rows)
-        total_waller_dimension = [{diameter: count * len(rows)} for item in total_dia_list_row for diameter, count in item.items()]
-        total_tie_dimention = [{diameter: count * len(rows)}  for diameter, count in per_row_tie_dimension.items()]
-        highlight_status = False
-        
-    elif len(hori_length) ==3 and len(verti_length) == 3:
-        hori_length_s, verti_length_s = sorted(hori_length), sorted(verti_length)
-        left_length = hori_length_s[-1]
-        inner_lenght = hori_length_s[-2]
-        left_w = hori_length_s[-3]
-        right_width = verti_length_s[-1]
-        inner_width = verti_length_s[-2]
-        right_w = verti_length_s[-3]
-        positions = _waller_positions(height_mm)
-        waller_count_leghts_list = _per_row_count_waller(left_length, right_width, inner_lenght, inner_width, left_w, right_w)
-        # calculate total waller
-        total_waller_lw, total_di_list_lw = _get_total_waller_count(waller_count_leghts_list)
-        per_row_tie,per_row_tie_dimension = _get_tie_count_and_length(left_length,right_width,inner_lenght, inner_width, left_w, right_w)
-        rows = [WallerRow(pos, per_row_tie, total_waller_lw) for pos in positions]
-        total_tie_rod = per_row_tie * len(rows)
-        total_waller = total_waller_lw * len(rows)
-        total_waller_dimension = [{diameter: count * len(rows)} for item in total_di_list_lw for diameter, count in item.items()]
-        total_tie_dimention = [{diameter: count * len(rows)}  for diameter, count in per_row_tie_dimension.items()]
-        highlight_status = False
+    try:
+        # get all vertices length
+        hori_length, verti_length, diago_length = _get_polygon_lengths(polygon_pts)
+        length4 = hori_length + verti_length + diago_length
+        length41 = hori_length + verti_length
+        if len(length4) == 4 or len(length41) ==4:
+            lengths_lst_sum = hori_length + verti_length
+            if len(lengths_lst_sum) == 4:
+                lengths_lst = lengths_lst_sum
+            else:
+                lengths_lst = length4
+            length1, width1 = max(lengths_lst), min(lengths_lst)
+            positions = _waller_positions(height_mm)
+            waller_count_leghts_list = _per_row_count_waller(length1, width1)
+            total_waller_lw, total_dia_list = _get_total_waller_count(waller_count_leghts_list)
+            total_waller_row  = total_waller_lw + total_waller_lw
+            total_dia_list_row = [{diameter: count * 2} for item in total_dia_list for diameter, count in item.items()]
+            # get tie rod lengths and count
+            per_row_tie,per_row_tie_dimension = _get_tie_count_and_length(length1, width1)
+            rows = [WallerRow(pos, per_row_tie, total_waller_row) for pos in positions]
+            total_tie_rod = per_row_tie * len(rows)
+            total_waller = total_waller_row * len(rows)
+            total_waller_dimension = [{diameter: count * len(rows)} for item in total_dia_list_row for diameter, count in item.items()]
+            total_tie_dimention = [{diameter: count * len(rows)}  for diameter, count in per_row_tie_dimension.items()]
+            highlight_status = False
+            
+        elif len(hori_length) ==3 and len(verti_length) == 3:
+            hori_length_s, verti_length_s = sorted(hori_length), sorted(verti_length)
+            left_length = hori_length_s[-1]
+            inner_lenght = hori_length_s[-2]
+            left_w = hori_length_s[-3]
+            right_width = verti_length_s[-1]
+            inner_width = verti_length_s[-2]
+            right_w = verti_length_s[-3]
+            positions = _waller_positions(height_mm)
+            waller_count_leghts_list = _per_row_count_waller(left_length, right_width, inner_lenght, inner_width, left_w, right_w)
+            # calculate total waller
+            total_waller_lw, total_di_list_lw = _get_total_waller_count(waller_count_leghts_list)
+            per_row_tie,per_row_tie_dimension = _get_tie_count_and_length(left_length,right_width,inner_lenght, inner_width, left_w, right_w)
+            rows = [WallerRow(pos, per_row_tie, total_waller_lw) for pos in positions]
+            total_tie_rod = per_row_tie * len(rows)
+            total_waller = total_waller_lw * len(rows)
+            total_waller_dimension = [{diameter: count * len(rows)} for item in total_di_list_lw for diameter, count in item.items()]
+            total_tie_dimention = [{diameter: count * len(rows)}  for diameter, count in per_row_tie_dimension.items()]
+            highlight_status = False
 
-    else: 
-        # len(hori_length) >=4 and len(verti_length) >=4
-        total_vertices = hori_length + verti_length + diago_length
-        ascend_total_vertics = sorted(total_vertices)
-        min_a = ascend_total_vertics[0]
-        min_b= ascend_total_vertics[1]
-        tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm, left_w=min_a, right_w=min_b)
+        else: 
+            # len(hori_length) >=4 and len(verti_length) >=4
+            total_vertices = hori_length + verti_length + diago_length
+            ascend_total_vertics = sorted(total_vertices)
+            min_a = ascend_total_vertics[0]
+            min_b= ascend_total_vertics[1]
+            tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm, left_w=min_a, right_w=min_b)
+            positions = _waller_positions(height_mm)
+            wallers_count_length_list = _per_row_count_waller(length_mm,width_mm, total_vertices=total_vertices)
+            # find total waller count
+            total_waller_row, total_dia_list_row1 = _get_total_waller_count(wallers_count_length_list)
+            rows = [WallerRow(pos, tierod_count_per_row, total_waller_row) for pos in positions]
+            total_tie_rod = tierod_count_per_row * len(rows)
+            total_waller = total_waller_row * len(rows)
+            total_waller_dimension = [{diameter: count * len(rows)} for item in total_dia_list_row1 for diameter, count in item.items()]
+            total_tie_dimention = [{diameter: count * len(rows)}  for diameter, count in per_row_tie_dimension.items()]
+            highlight_status = True
+    except:
+        tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm)
         positions = _waller_positions(height_mm)
-        wallers_count_length_list = _per_row_count_waller(length_mm,width_mm, total_vertices=total_vertices)
+        wallers_count_length_list = _per_row_count_waller(length_mm,width_mm)
         # find total waller count
-        total_waller_row, total_dia_list_row1 = _get_total_waller_count(wallers_count_length_list)
+        total_waller_lw, total_waller_dia_lwel = _get_total_waller_count(wallers_count_length_list)
+        total_waller_row  = total_waller_lw * 2
+        total_waller_dia_row = [{diameter: count * 2} for item in total_waller_dia_lwel for diameter, count in item.items()]
         rows = [WallerRow(pos, tierod_count_per_row, total_waller_row) for pos in positions]
         total_tie_rod = tierod_count_per_row * len(rows)
         total_waller = total_waller_row * len(rows)
-        total_waller_dimension = [{diameter: count * len(rows)} for item in total_dia_list_row1 for diameter, count in item.items()]
+        total_waller_dimension = [{diameter: count * len(rows)} for item in total_waller_dia_row for diameter, count in item.items()]
         total_tie_dimention = [{diameter: count * len(rows)}  for diameter, count in per_row_tie_dimension.items()]
         highlight_status = True
-  
+        
             
     
     return SharewallAccessoryResult(
