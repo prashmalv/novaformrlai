@@ -1,6 +1,7 @@
 from src.models.element import StructuralElement, ElementBOQ, ElementType,PanelEntry
 from src.dwg_parse.collect_text import _collect_texts
 from src.dwg_parse.collect_polylines import _collect_polylines
+from src.dwg_parse.collect_label_from_nova_output import collect_labels
 
 import math
 import re
@@ -10,35 +11,6 @@ try:
 except ImportError:
     EZDXF_OK = False
 
-
-# L-shaped column format: L-COL:-(400X3000)+(400X1500)
-_L_COL_RE = re.compile(
-    r'^(?!H[-\s]*\d(?:[-\s]|$))'
-    r'(?:(GF|FF|SF|TF|RF|BF|LG|PH|B[0-9]|[1-9][0-9]*[FA])[-\s]*)?'
-    r'L[-\s]*COL[:\-\s]*'                       # L-COL + separator
-    r'\((\d+)\s*[xX]\s*(\d+)\)'               # (W1xH1)  first leg
-    r'\s*\+\s*'                                # +
-    r'\((\d+)\s*[xX]\s*(\d+)\)',              # (W2xH2)  second leg
-    re.IGNORECASE,
-)
-
-_NOVA_LABEL_RE = re.compile(
-    # Floor prefix: named (GF/FF/SF/TF/RF/BF/LG/PH) OR basement B1-B9
-    # OR numbered floors 1F-99F / 1A-9A — deliberately excludes bare R/L
-    # to avoid consuming R-COL / L-COL type prefixes
-    r'^(?!H[-\s]*\d(?:[-\s]|$))'
-    r'(?:(GF|FF|SF|TF|RF|BF|LG|PH|B[0-9]|[1-9][0-9]*[FA])[-\s]*)?'
-    r'(R[-\s]*COL|L[-\s]*COL|COL)'             # element type
-    r'[:\-\s]+'                                 # separator (colon, dash, space)
-    r'[Ø\s]*'                                   # optional Ø (R-COL diameter symbol)
-    r'(\d+)\s*[xX]\s*(\d+)',                    # WxD dimensions
-    re.IGNORECASE,
-)
-
-_SHEAR_WALL_LABEL_RE = re.compile(
-    r'^([A-GI-Z]{1,2})[-_\s]*\d+[-_\s]+(\d+)\s*[xX]\s*(\d+)$',
-    re.IGNORECASE,
-)
 
 _NOVA_WxH_RE = re.compile(r'^(\d+)[xX](\d+)$')  # e.g. "300X2470"
 
@@ -93,12 +65,110 @@ def _nearest_numeric_text(
             best_d, best_v = d, t_clean
     return best_v
 
+# --------------- chain start------------------------------------
+import math
+from collections import Counter
+
+TEXT_CHAIN_TOL = 670.0  # max hop distance (drawing units) for the text chain
+
+import math
+
+
+def _text_chain_around_column(
+    txt: tuple,
+    texts: list[tuple[float, float, str]],
+    tol: float = TEXT_CHAIN_TOL,
+) -> list[tuple[float, float, str]]:
+    """
+    Build a text chain using nearest-neighbour traversal.
+
+    1. Find the nearest text to the starting position, skipping
+       texts at exactly the same coordinates.
+    2. Find unused texts within tolerance of ANY point in the chain.
+    3. Select the globally nearest eligible candidate.
+       Break distance ties using the original list index.
+    4. Repeat until no eligible candidates remain.
+    5. Append the original txt if it is not already present.
+
+    Duplicate text entries remain distinct through their list indices.
+    """
+    if not texts:
+        return [txt]
+
+    lx, ly = txt[0], txt[1]
+
+    # Step 1: Find the nearest starting text.
+    min_dist = float("inf")
+    first_idx = None
+
+    for idx, text_item in enumerate(texts):
+        if text_item[0] == lx and text_item[1] == ly:
+            continue
+
+        d = math.hypot(
+            text_item[0] - lx,
+            text_item[1] - ly,
+        )
+
+        if d < min_dist:
+            min_dist = d
+            first_idx = idx
+
+    if first_idx is None:
+        return [txt]
+
+    chain_idx = [first_idx]
+    used = {first_idx}
+
+    # Step 2: Search from every point already in the chain.
+    while True:
+        candidates = []
+
+        for idx, (tx, ty, _) in enumerate(texts):
+            if idx in used:
+                continue
+
+            # Find the minimum distance to any point in the chain.
+            min_chain_dist = float("inf")
+
+            for chain_i in chain_idx:
+                cx, cy, _ = texts[chain_i]
+
+                d = math.hypot(tx - cx, ty - cy)
+
+                if d < min_chain_dist:
+                    min_chain_dist = d
+
+            if min_chain_dist <= tol:
+                candidates.append((min_chain_dist, idx))
+
+        if not candidates:
+            break
+
+        # Nearest candidate first; original index breaks ties.
+        candidates.sort()
+        _, next_idx = candidates[0]
+
+        chain_idx.append(next_idx)
+        used.add(next_idx)
+
+    # Step 3: Return the ordered chain.
+    chain = [texts[idx] for idx in chain_idx]
+
+    if txt not in chain:
+        chain.append(txt)
+
+    return chain
+
+# -----------------chain end -------------------------------------
+
+
 def _panels_around_column(
-    col: dict,
     polylines: list[dict],
     texts: list[tuple[float, float, str]],
     casting_height_mm: float,
     product_height_mm: float,
+    best_text = tuple,
 ) -> list[PanelEntry]:
     """
     Find all 80mm-thick rectangles adjacent to `col`, read their panel widths
@@ -107,63 +177,41 @@ def _panels_around_column(
     casting_height_mm : actual pour height (stored on element, shown in BOQ header)
     product_height_mm : physical panel height Nova supplies (e.g. 3200 for 2470 pour)
     """
-    PT        = 95   # panel thickness tolerance (80mm nominal + 15mm wiggle)
-    BUF       = PT + 25  # look this far outside column outline
-    MIN_THICK = 30   # annotation/dimension lines thinner than this → skip
-    MAX_WIDTH = 650  # single flat panel max width (600mm + tolerance) → skip longer
+
+
+    text_chain = _text_chain_around_column(best_text, texts, TEXT_CHAIN_TOL)
+    #print("this chain :", text_chain)
 
     oc_qty = 0
     ic_qty = 0
+    H_qty =0
     flat_widths: list[int] = []
 
-    for p in polylines:
-        if p is col:
-            continue
-        pw, ph = p['w'], p['h']
+    for _, _, txt in text_chain:
 
-        # Must be panel-thin (one dimension ≤ PT = 95mm)
-        if min(pw, ph) > PT:
-            continue
+        txt = txt.strip().upper()
 
-        # Skip annotation/dimension lines (too thin — typically 1–20mm)
-        if min(pw, ph) < MIN_THICK:
-            continue
-
-        # Skip outer bounding-box frame lines (too long to be a single panel)
-        if max(pw, ph) > MAX_WIDTH:
-            continue
-
-        # Must be adjacent to column outline (within BUF of its bounding box)
-        pcx, pcy = p['cx'], p['cy']
-        if not (col['x0'] - BUF <= pcx <= col['x1'] + BUF and
-                col['y0'] - BUF <= pcy <= col['y1'] + BUF):
-            continue
-
-        # OC corner: both dimensions ≤ PT (≈ 80×80 square)
-        if pw <= PT and ph <= PT:
-            oc_qty += 1
-            continue
-
-        # Flat panel — read width from nearest numeric MTEXT
-        lbl = _nearest_numeric_text(pcx, pcy, texts)
-        if lbl:
-            m = _NOVA_WxH_RE.match(lbl)
-            if m:
-                flat_widths.append(int(m.group(1)))  # width part of WxH label
-            else:
-                flat_widths.append(int(lbl))
-        else:
-            flat_widths.append(round(max(pw, ph)))   # fallback: measured dimension
-
-    # IC (Inner Corner) detection — look for "IC" MTEXT inside/near the column outline
-    for tx, ty, t in texts:
-        if t.strip().upper() != 'IC':
-            continue
-        if (col['x0'] - 200 <= tx <= col['x1'] + 200 and
-                col['y0'] - 200 <= ty <= col['y1'] + 200):
+        # Check IC
+        if re.fullmatch(r'IC', txt):
             ic_qty += 1
-            break  # one IC per L-shaped column
 
+        # Check OC
+        elif re.fullmatch(r'OC', txt):
+            oc_qty += 1
+
+        # Check H1, H4, H25 etc.
+        elif re.fullmatch(r'H\d{1,3}', txt):
+            H_qty += 1
+
+        # Check dimensions like 600X1237 or 80X5250
+        elif m := re.fullmatch(r'(\d{2,3})X\d{4}', txt):
+            flat_widths.append(int(m.group(1)))
+
+        # Check flat widths like 90, 200, 500, 600
+        elif re.fullmatch(r'\d{2,3}', txt):
+            flat_widths.append(int(txt))
+        else:
+            continue
     from collections import Counter
     width_counts = Counter(flat_widths)
 
@@ -194,7 +242,58 @@ def _panels_around_column(
             is_corner=False,
         ))
     return entries
+# -------------------nearest mtext start--------------
 
+def _dist_point_to_bbox_edge(x: float, y: float, p: tuple) -> float:
+    """
+    Return the Euclidean distance between two points.
+
+    If both points have the same coordinates, return 0.
+    """
+    px, py = p[0], p[1]
+
+    dx = px - x
+    dy = py - y
+
+    return math.hypot(dx, dy)
+
+output_pattern = [
+    r'^\d{2,3}[Xx]\d{4}$',
+    r'^\d{2,3}$',
+    r'^(?:IC|OC)$',
+    r'^[A-Z]\d{1,3}$']
+
+def _nearest_mtext_to_label(
+    lbl: dict,
+    texts: list[tuple],
+) -> tuple | None:
+    """
+    Return the nearest text tuple to the label position.
+
+    Skip a text if its coordinates are identical to the label's
+    coordinates.
+    """
+    lx, ly = lbl['x'], lbl['y']
+
+    min_dist = float('inf')
+    nearest_text = None
+
+    for txt in texts:
+        # Skip the text if its coordinates match the label.
+        if txt[0] == lx and txt[1] == ly:
+            continue
+        
+        # match only output patterm
+        if not any(re.fullmatch(p, txt[2]) for p in output_pattern):
+            continue     
+        d = _dist_point_to_bbox_edge(lx, ly, txt)
+
+        if d < min_dist:
+            min_dist = d
+            nearest_text = txt
+
+    return nearest_text
+# --------------------nearest text end -------------------
 
 def parse_nova_drawing(
     dxf_path: str,
@@ -243,65 +342,9 @@ def parse_nova_drawing(
         return [], [], "No text entities found — is this a Nova labelled drawing?"
 
     # ── Step 1: collect all column labels ────────────────────────────────────
-    col_labels: list[dict] = []
+    col_label: list[dict] = []
     seen_pos: set[tuple[int, int]] = set()  # deduplicate duplicate TEXT entities
-
-    for tx, ty, txt in texts:
-        pos_key = (round(tx), round(ty))
-        if pos_key in seen_pos:
-            continue
-
-        # Skip elevation-view labels (e.g. "COL ELEVATION: 600X300")
-        # These appear in the side-view section, not the plan view
-        if re.search(r'\bELEV(ATION)?\b', txt, re.IGNORECASE):
-            continue
-
-        # L-COL parentheses format first: L-COL:-(400X3000)+(400X1500)
-        m2 = _L_COL_RE.search(txt)
-        if m2:
-            floor_str = (m2.group(1) or "").upper()
-            leg1_w, leg1_h = int(m2.group(2)), int(m2.group(3))
-            leg2_w, leg2_h = int(m2.group(4)), int(m2.group(5))
-            seen_pos.add(pos_key)
-            col_labels.append({
-                'x': tx, 'y': ty, 'raw_text': txt,
-                'floor': floor_str, 'etype': 'LCOL',
-                'is_lcol_paren': True,
-                'leg1_w': leg1_w, 'leg1_h': leg1_h,
-                'leg2_w': leg2_w, 'leg2_h': leg2_h,
-                'dim1': max(leg1_w, leg1_h, leg2_w, leg2_h),
-                'dim2': min(leg1_w, leg2_w),
-            })
-            continue
-        m1 = _SHEAR_WALL_LABEL_RE.search(txt)
-        if m1:
-            etype_raw = m1.group(1 or '').upper()
-            dim1 = int(m1.group(2))
-            dim2 = int(m1.group(3))
-            seen_pos.add(pos_key)
-            col_labels.append({
-                'x': tx, 'y': ty, 'raw_text': txt,
-                'floor': '',
-                'etype': etype_raw,
-                'is_lcol_paren': False,
-                'dim1': dim1, 'dim2': dim2,
-            })
-            continue
-        # Regular / R-COL / plain L-COL format
-        m = _NOVA_LABEL_RE.search(txt)
-        if not m:
-            continue
-        floor_str = (m.group(1) or "").upper()
-        etype_raw = m.group(2).upper().replace(" ", "").replace("-", "")
-        dim1 = int(m.group(3))
-        dim2 = int(m.group(4))
-        seen_pos.add(pos_key)
-        col_labels.append({
-            'x': tx, 'y': ty, 'raw_text': txt,
-            'floor': floor_str, 'etype': etype_raw,
-            'is_lcol_paren': False,
-            'dim1': dim1, 'dim2': dim2,
-        })
+    col_labels = collect_labels(texts,col_label, seen_pos)
 
     if not col_labels:
         return [], [], (
@@ -328,40 +371,12 @@ def parse_nova_drawing(
         else:
             e_type = ElementType.SHEAR_WALL
 
-        # ── Find best matching column outline polyline ────────────────────
-        best_col: dict | None = None
-        best_score = float('inf')
-
-        for p in polylines:
-            if not p['closed']:
-                continue
-            if p['w'] < 150 or p['h'] < 150:
-                continue
-            if p['cy'] < ly - 500:  # outline must be above (or near) the label
-                continue
-            if p['cx'] < lx - 500:  # outline must be above (or near) the label
-                continue
-
-            pw, ph = p['w'], p['h']
-            verts  = p.get('verts', 4)
-            dist   = math.hypot(p['cx'] - lx, p['cy'] - ly)
-
-            if is_lcol:
-                # L-shaped columns: strongly prefer 6+ vertex polylines
-                score = dist if verts >= 6 else dist + 10000
-            else:
-                dim_ok = (
-                    (abs(pw - dim1) / max(dim1, 1) < tol and
-                     abs(ph - dim2) / max(dim2, 1) < tol) or
-                    (abs(pw - dim2) / max(dim2, 1) < tol and
-                     abs(ph - dim1) / max(dim1, 1) < tol)
-                )
-                score = dist if dim_ok else dist + 50000
-
-            if score < best_score:
-                best_score = score
-                best_col = p
-
+        # ── Nearest mtext outline to this label ──────────────────────────
+        best_text = _nearest_mtext_to_label(lbl, texts)
+        if best_text is None:
+            continue   # no outline near this label; skip (or log it)
+        
+        
         # ── Build element ─────────────────────────────────────────────────
         if etype_raw == 'RCOL':
             elem_type = ElementType.COLUMN
@@ -377,9 +392,9 @@ def parse_nova_drawing(
             notes     = "L-shaped column"
             leg1_w = lbl['leg1_w']; leg1_h = lbl['leg1_h']
             leg2_w = lbl['leg2_w']; leg2_h = lbl['leg2_h']
-            if best_col:
-                length_mm = float(max(best_col['w'], best_col['h']))
-                width_mm  = float(min(best_col['w'], best_col['h']))
+            if dim1 and dim2:
+                length_mm = float(max(dim1, dim2))
+                width_mm  = float(min(dim1, dim2))
             else:
                 length_mm = float(max(leg1_w, leg1_h, leg2_w, leg2_h))
                 width_mm  = float(min(leg1_w, leg2_w))
@@ -401,10 +416,11 @@ def parse_nova_drawing(
             notes     = ""
             length_mm = float(max(dim1, dim2))
             width_mm  = float(min(dim1, dim2))
-            label_str = (
-                f"{floor_str + '-' if floor_str else ''}COL "
-                f"{int(length_mm)}x{int(width_mm)}"
-            )
+            label_str = raw_text1
+            # label_str = (
+            #     f"{floor_str + '-' if floor_str else ''}COL "
+            #     f"{int(length_mm)}x{int(width_mm)}"
+            # )
 
         elem = StructuralElement(
             element_type=elem_type,
@@ -421,15 +437,22 @@ def parse_nova_drawing(
         if etype_raw == 'RCOL':
             # Round column: no 80mm plan-view panels; use WxH elevation labels
             panel_entries = _rcol_panels_from_elev(lx, ly, texts, product_height_mm)
-        elif best_col is not None:
-            print("panel elif")
+        elif is_lcol:
+            # ── Panels (and the text chain) around that outline ───────────────
             panel_entries = _panels_around_column(
-                best_col, polylines, texts,
+                polylines, texts,
                 casting_height_mm=casting_height_mm,
                 product_height_mm=product_height_mm,
+                best_text = best_text,
             )
+        elif best_text:  
+            panel_entries = _panels_around_column(
+                    polylines, texts,
+                    casting_height_mm=casting_height_mm,
+                    product_height_mm=product_height_mm,
+                    best_text = best_text,) 
+            
         else:
-            print("panel esle")
             panel_entries = []
 
         if not panel_entries:

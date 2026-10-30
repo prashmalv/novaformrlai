@@ -189,7 +189,20 @@ def compute_column_accessories(
             total_waller_dimension = [{diameter: count * len(rows)} for item in total_waller_dia_row1 for diameter, count in item.items()]
             total_tie_dimention = [{diameter: count * len(rows)}  for diameter, count in per_row_tie_dimension.items()]
             highlight_status = True
-
+    elif length_mm ==0:
+        tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm)
+        positions = _waller_positions(height_mm)
+        wallers_count_length_list = _per_row_count_waller(length_mm,width_mm)
+        # find total waller count
+        total_waller_lw, total_waller_dia_lwel = _get_total_waller_count(wallers_count_length_list)
+        total_waller_row  = total_waller_lw * 2
+        total_waller_dia_row = [{diameter: count * 2} for item in total_waller_dia_lwel for diameter, count in item.items()]
+        rows = [WallerRow(pos, tierod_count_per_row, total_waller_row) for pos in positions]
+        total_tie_rod = 0
+        total_waller = 0
+        total_waller_dimension = []
+        total_tie_dimention = []
+        highlight_status = True
     else:
         tierod_count_per_row, per_row_tie_dimension = _get_tie_count_and_length(length_mm,width_mm)
         positions = _waller_positions(height_mm)
