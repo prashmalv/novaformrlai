@@ -291,7 +291,7 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:
                 qty        = panel.quantity
                 if "Inner Corner" in plabel:
                     unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 3)
-                elif "Hunch" in plabel:
+                elif  "Hunch" in plabel or "H" in plabel:
                     unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 3)
                 else:
                     unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 3)
@@ -672,7 +672,7 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
         plabel = _fmt_panel(k)
         if "Inner Corner" in plabel:
             unit_a = round(2 * d['w'] * d['h'] / 1_000_000, 3)
-        elif "Hunch" in plabel:
+        elif  "Hunch" in plabel or "H" in plabel:
             unit_a = round(2 * d['w'] * d['h'] / 1_000_000, 3)
         else:
             unit_a = round(d['w'] * d['h'] / 1_000_000, 3)

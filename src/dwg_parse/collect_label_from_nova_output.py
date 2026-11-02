@@ -15,7 +15,7 @@ _SHEAR_WALL_LABEL_RE = re.compile(
     r'^([A-GI-Z]{1,2})[-_\s]*\d+[-_\s]+(\d+)\s*[xX]\s*(\d+)$',
     re.IGNORECASE,)
 
-pattern =   r'^[A-Z]{1,4}[-_  ]?\d{1,3}$'     #r'^[A-ZA-Z]{1,2}[-_ ]?[1-3]$'
+pattern =   r'^[A-GI-Z]{1,4}[-_  ]?\d{1,3}$'     #r'^[A-ZA-Z]{1,2}[-_ ]?[1-3]$'
 
 
 

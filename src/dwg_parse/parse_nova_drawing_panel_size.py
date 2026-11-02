@@ -184,7 +184,7 @@ def _panels_around_column(
 
     oc_qty = 0
     ic_qty = 0
-    H_qty =0
+    H_widths: list[str] = []
     flat_widths: list[int] = []
 
     for _, _, txt in text_chain:
@@ -201,7 +201,7 @@ def _panels_around_column(
 
         # Check H1, H4, H25 etc.
         elif re.fullmatch(r'H\d{1,3}', txt):
-            H_qty += 1
+            H_widths.append(str(txt))
 
         # Check dimensions like 600X1237 or 80X5250
         elif m := re.fullmatch(r'(\d{2,3})X\d{4}', txt):
@@ -214,6 +214,7 @@ def _panels_around_column(
             continue
     from collections import Counter
     width_counts = Counter(flat_widths)
+    h_counts = Counter(H_widths)
 
     entries: list[PanelEntry] = []
     if oc_qty:
@@ -233,6 +234,15 @@ def _panels_around_column(
             is_corner=True,
             is_inner_corner=True,
         ))
+
+    for w in sorted(h_counts.keys(), reverse=True):
+            entries.append(PanelEntry(
+                size_label=f"{w}X{int(product_height_mm)}",
+                width_mm=float(200),
+                height_mm=product_height_mm,
+                quantity=h_counts[w],
+                is_corner=False,
+            ))
     for w in sorted(width_counts.keys(), reverse=True):
         entries.append(PanelEntry(
             size_label=f"{w}X{int(product_height_mm)}",

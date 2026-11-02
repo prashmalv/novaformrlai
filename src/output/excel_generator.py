@@ -365,7 +365,7 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None, acc_status
             qty       = panel.quantity
             if "Inner Corner" in label:
                 unit_a    = round(2 * panel.width_mm * panel.height_mm / 1_000_000, 3)
-            elif "Hunch" in label:
+            elif "Hunch" in label or "H" in label:
                     unit_a    = round(2 * panel.width_mm * panel.height_mm / 1_000_000, 3)
             else:
                 unit_a    = round(panel.width_mm * panel.height_mm / 1_000_000, 3)
@@ -536,7 +536,7 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None, acc_status
         plabel = _fmt_panel(k)
         if "Inner Corner" in plabel:
             unit_a = round((2 * d['w'] * d['h']) / 1_000_000, 3)
-        elif "Hunch" in plabel:
+        elif "Hunch" in plabel or "H" in plabel:
             unit_a = round((2 * d['w'] * d['h']) / 1_000_000, 3)
         else:
             unit_a = round(d['w'] * d['h'] / 1_000_000, 3)
