@@ -20,45 +20,84 @@ except ImportError:
 _SW_LABEL_RE = re.compile(r'^(?!H-?\d)[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
 _SW_LABEL_RE_COMMA = re.compile(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$')
 
-_COLUMN_PREFIX = re.compile(r'^C\d', re.I)
+# _COLUMN_PREFIX = re.compile(r'^C\d', re.I)
+_COLUMN_PREFIX = re.compile(r'^C[-_ ]?\d', re.I)
+
 def _elem_type(label: str) -> 'ElementType':
+        label = label.strip()
         return ElementType.COLUMN if _COLUMN_PREFIX.match(label) else ElementType.SHEAR_WALL
 
-def _classify_polygon_corners(pts: list) -> list:
+
+def _classify_polygon_corners(pts: list,threshold: float = 199,) -> list:
     """
-    Classify each polygon vertex as 'OC80' (convex) or 'IC100' (concave).
+    Classify polygon vertices as OC80, IC100, or Hunch.
 
-    Cross-product of consecutive edges determines convex vs concave.  The sign
-    convention depends on whether the polygon is wound CCW (positive signed
-    area) or CW (negative).  We detect the winding direction first and flip
-    the cross-product interpretation for CW polygons so both orientations
-    produce correct OC/IC labels.
-
-    Verified against SW6 (OC×5, IC×1) and SW11 (OC×10, IC×6).
+    Rules:
+      - Angles around 90 degrees:
+          * Hunch if either adjacent edge < 200 mm.
+          * Otherwise retain OC80/IC100.
+      - Reflex angles:
+          * Hunch for the angled corners identified by the
+            project rule (approximately 210-240 or 300-340 degrees).
+      - Other corners retain OC80/IC100 classification.
     """
     n = len(pts)
-    # Shoelace signed area — positive = CCW, negative = CW
-    signed_area = sum(
-        pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]
-        for i in range(n)
-    )
-    is_ccw = signed_area > 0
 
+    signed_area = sum(
+        pts[i][0] * pts[(i + 1) % n][1]
+        - pts[(i + 1) % n][0] * pts[i][1]
+        for i in range(n))
+
+    is_ccw = signed_area > 0
     corners = []
+
     for i in range(n):
         prev = pts[(i - 1) % n]
         curr = pts[i]
-        nxt  = pts[(i + 1) % n]
-        e_in  = (curr[0] - prev[0], curr[1] - prev[1])
-        e_out = (nxt[0]  - curr[0], nxt[1]  - curr[1])
-        cross = e_in[0] * e_out[1] - e_in[1] * e_out[0]
-        if is_ccw:
-            corners.append('IC100' if cross < 0 else 'OC80')
-        else:
-            # CW polygon: cross-product signs are flipped relative to CCW
-            corners.append('OC80' if cross < 0 else 'IC100')
-    return corners
+        nxt = pts[(i + 1) % n]
 
+        e_in = (curr[0] - prev[0], curr[1] - prev[1])
+        e_out = ( nxt[0] - curr[0],nxt[1] - curr[1])
+
+        len_in = math.hypot(*e_in)
+        len_out = math.hypot(*e_out)
+
+        # if len_in == 0 or len_out == 0:
+        #     raise ValueError(f"Zero-length edge at vertex index {i}")
+
+        cross = (e_in[0] * e_out[1] - e_in[1] * e_out[0])
+        dot = (e_in[0] * e_out[0] + e_in[1] * e_out[1])
+
+        turn_angle = math.degrees(math.atan2(abs(cross), dot))
+
+        if is_ccw:
+            angle = 180 - turn_angle if cross > 0 else 180 + turn_angle
+        else:
+            angle = 180 + turn_angle if cross > 0 else 180 - turn_angle
+
+        short_edge = min(len_in, len_out) < threshold
+
+        # Reflex/diagonal hunch angles observed in this drawing.
+        angled_hunch = (185 < angle < 265 or 275 < angle < 355 )    #  (210 < angle < 240 or 300 < angle < 340 )
+
+        # Near-90-degree corner with a short adjacent edge.
+        right_angle_hunch = (88 <= angle <= 93 and short_edge)
+
+        if angled_hunch:
+            corners.append(f"Hunch 200")
+            continue
+        short_length = round(min(len_in, len_out))
+        if right_angle_hunch:
+            corners.append(f"Hunch {short_length}")
+            continue
+
+        # Preserve original OC/IC classification.
+        if is_ccw:
+            corners.append("IC100" if cross < 0 else "OC80")
+        else:
+            corners.append("OC80" if cross < 0 else "IC100")
+
+    return corners
 
 
 def _compute_polygon_face_nets(pts: list, corners: list) -> list:
@@ -75,10 +114,23 @@ def _compute_polygon_face_nets(pts: list, corners: list) -> list:
         p1 = pts[i]
         p2 = pts[(i + 1) % n]
         face_len = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+        next_i = (i + 1) % n
         deduct = (100 if corners[i] == 'IC100' else 0) + \
-                 (100 if corners[(i + 1) % n] == 'IC100' else 0)
-        nets.append(max(0, round(face_len) - deduct))
+                 (100 if corners[next_i] == 'IC100' else 0)
+        # Extract the numeric value from Hunch labels
+        number1 = 0
+        number2 = 0
+        h_corner1 = corners[i]
+        if h_corner1.startswith("H"):
+            number1 = int(re.search(r'\d+', h_corner1).group())
+
+        h_corner2 = corners[next_i]
+        if h_corner2.startswith("H"):
+            number2 = int(re.search(r'\d+', h_corner2).group())
+    
+        nets.append(max(0, round(face_len) - (deduct + number1 + number2)))
     return nets
+
 
 def parse_nova_shear_walls(
     dxf_path: str,
@@ -168,6 +220,7 @@ def parse_nova_shear_walls(
         elif _SW_LABEL_RE_COMMA.match(_ltxt) and not _in_schedule_table(_lx, _ly):
             _raw_cnt[_ltxt.upper()] += 1
     _plan_label_cnt = dict(_raw_cnt)
+    #print("Label count :", _plan_label_cnt)
     # ── Collect all significant closed polylines ───────────────────────────
 
     sig_polys: list = []  # dict with points, bounding-box metadata, and vertex count
@@ -525,7 +578,8 @@ def parse_nova_shear_walls(
         f_nets  = _compute_polygon_face_nets(pts, corners)
         oc_cnt  = corners.count('OC80')
         ic_cnt  = corners.count('IC100')
-
+        hunch_list = [corner for corner in corners if corner.startswith("H")]
+        #print("Label, pts", label)
         # Classify element type from bounding box
         long_mm  = max(rep['w'], rep['h'])
         short_mm = min(rep['w'], rep['h'])
@@ -534,7 +588,7 @@ def parse_nova_shear_walls(
         #     elem_type = ElementType.COLUMN
         # else:
         #     elem_type = ElementType.SHEAR_WALL
-        # print("this is label type :", elem_type, label)
+        #print("this is label type and label :",_elem_type(label), label)
         elem = StructuralElement(
             element_type=_elem_type(label),
             label=label,
@@ -552,6 +606,7 @@ def parse_nova_shear_walls(
             oc_count=oc_cnt,
             ic_count=ic_cnt,
             product_height_mm=product_height_mm,
+            hunch_list = hunch_list,
         )
 
         elements.append(elem)
@@ -561,4 +616,3 @@ def parse_nova_shear_walls(
         return [], [], "Labels matched but no BOQ could be computed"
 
     return elements, boqs, None
-

@@ -242,8 +242,8 @@ def _make_diagram_image(boq: ElementBOQ, width_mm: float = 52, height_mm: float 
     except Exception:
         return None
 
-
-def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
+import traceback
+def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:bool = False) -> list:
     """
     Build the per-element-group BOQ table matching the new template exactly.
     Columns: PRODUCT | Qty | UOM | No of Set | Total Qty | Unit Area (SqM) | Total Area (SqM)
@@ -253,9 +253,6 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     el        = boq.element
     height_mm = group['height_mm']
     no_sets   = max(1, el.quantity) * max(1, num_sets)
-    # label = el.label
-    # print("this is boq :", boq)
-    # print("This is el :",el, type(el))
 
     req_type = el.element_type.value.lower()
     dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
@@ -278,42 +275,46 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     total_area = 0.0
     first_panel_row = True
     filler_row_indices = []   # track rows that are fill plates (for grey styling)
-
     for panel in boq.panels:
-        is_filler = getattr(panel, 'is_filler', False)
-        if is_filler:
-            plabel    = f"Fill Plate {int(panel.width_mm)}mm (spacer)"
-            unit_area = 0.0
-            row_area  = 0.0
-            qty       = panel.quantity
-            total_qty = qty * no_sets
-            row = [plabel, f"{qty:.2f}", "nos", "", f"{total_qty:.2f}", "—", "—"]
-            filler_row_indices.append(len(data))
-        else:
-            plabel     = _fmt_panel(panel.size_label)
-            qty        = panel.quantity
-            if "Inner Corner" in plabel:
-                unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 2)
+        try:
+            is_filler = getattr(panel, 'is_filler', False)
+            if is_filler:
+                plabel    = f"Fill Plate {int(panel.width_mm)}mm (spacer)"
+                unit_area = 0.0
+                row_area  = 0.0
+                qty       = panel.quantity
+                total_qty = qty * no_sets
+                row = [plabel, f"{qty:.2f}", "nos", "", f"{total_qty:.2f}", "—", "—"]
+                filler_row_indices.append(len(data))
             else:
-                unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 2)
-            total_qty  = qty * no_sets
-            row_area   = round(unit_area * total_qty, 2)
-            total_area += row_area
-            row = [
-                plabel,
-                f"{qty:.2f}",
-                "nos",
-                str(no_sets) if first_panel_row else "",
-                f"{total_qty:.2f}",
-                f"{unit_area:.2f}",
-                f"{row_area:.2f}",
-            ]
-        data.append(row)
-        if not is_filler:
-            first_panel_row = False
-
+                plabel     = _fmt_panel(panel.size_label)
+                qty        = panel.quantity
+                if "Inner Corner" in plabel:
+                    unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 3)
+                elif  "Hunch" in plabel or "H" in plabel:
+                    unit_area  = round((2*panel.width_mm * panel.height_mm) / 1_000_000, 3)
+                else:
+                    unit_area  = round((panel.width_mm * panel.height_mm) / 1_000_000, 3)
+                total_qty  = qty * no_sets
+                row_area   = round(unit_area * total_qty, 3)
+                total_area += row_area
+                row = [
+                    plabel,
+                    f"{qty:.2f}",
+                    "nos",
+                    str(no_sets) if first_panel_row else "",
+                    f"{total_qty:.2f}",
+                    f"{unit_area:.3f}",
+                    f"{row_area:.3f}",
+                ]
+            data.append(row)
+            if not is_filler:
+                first_panel_row = False
+        except Exception:
+            traceback.print_exc()
+            raise
     # Total Area row
-    data.append(['', '', '', '', '', 'Total Area (in SqM)', f"{total_area:.2f}"])
+    data.append(['', '', '', '', '', 'Total Area (in SqM)', f"{total_area:.3f}"])
 
     t = Table(data, colWidths=cw, repeatRows=2)
     n = len(data)
@@ -370,7 +371,6 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
     diag_h_mm = 58
     diag_img  = _make_diagram_image(boq, width_mm=DIAG_W / mm, height_mm=diag_h_mm,
                                     dxf_doc=dxf_doc)
-
     if diag_img is not None:
         diag_header = Paragraph(
             "Floor Plan",
@@ -398,19 +398,20 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None) -> list:
         items.append(Paragraph(f"  ⚠ {w}", _styles()['warn']))
 
     # ── Column accessories mini-table ─────────────────────────────────────────
-    if el.is_column:
-        from src.engine.column_accessories import compute_column_accessories
-        acc, highlight_status = compute_column_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
-        items.append(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES', highlight_status))
-        #items.extend(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES', highlight_status))
+    if acc_status:
+        if el.is_column:
+            from src.engine.column_accessories import compute_column_accessories
+            acc, highlight_status = compute_column_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
+            items.append(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES', highlight_status))
+            #items.extend(_col_accessories_table(acc, no_sets,'COLUMN ACCESSORIES', highlight_status))
 
-    items.append(Spacer(1, 3*mm))
-    # ── Column accessories mini-table ─────────────────────────────────────────
-    if el.is_wall:
-        from src.engine.sharewall_accessories import compute_sharewall_accessories
-        acc, highlight_status = compute_sharewall_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
-        items.append(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
-        #items.extend(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
+        items.append(Spacer(1, 3*mm))
+        # ── Column accessories mini-table ─────────────────────────────────────────
+        if el.is_wall:
+            from src.engine.sharewall_accessories import compute_sharewall_accessories
+            acc, highlight_status = compute_sharewall_accessories(el.length_mm, el.width_mm, height_mm, el.label, el.polygon_pts)
+            items.append(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
+            #items.extend(_col_accessories_table(acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status))
 
     items.append(Spacer(1, 3*mm))
     return items
@@ -467,7 +468,9 @@ def _col_accessories_table( acc, no_sets: int, col,
     # ---------------------------------------------------------
     data_rows = [['Waller', acc.total_wallers, 'nos', no_sets, acc.total_wallers * no_sets ],
         ['Tie Rod', acc.total_tierods, 'nos', '', acc.total_tierods * no_sets ],
-        ['Anchor Nut', acc.total_anchor_nuts,'nos', '', acc.total_anchor_nuts * no_sets],]
+        ['Anchor Nut', acc.total_anchor_nuts,'nos', '', acc.total_anchor_nuts * no_sets],
+        [f'Waller Sizes (mm) :{acc.total_waller_dimensions}'],
+        [f'Tie Rod Sizes (mm) :{acc.total_tierod_dimensions}'],]
 
     # ---------------------------------------------------------
     # Build rows
@@ -652,8 +655,15 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
 
     def _sort(kv):
         k = kv[0]
-        return (0 if k.startswith('OC') or k.startswith('IC') else 1,
-                -totals[k]['w'])
+        return (
+        0 if k.startswith('IC')
+        else 1 if k.startswith('OC')
+        else 2 if k.startswith('H')
+        else 3,
+        -totals[k]['w'])
+
+        # return (0 if k.startswith('OC') or k.startswith('IC') else 1,
+        #         -totals[k]['w'])
 
     cw = [CW * 0.35, CW * 0.16, CW * 0.10, CW * 0.20, CW * 0.19]
     rows = [['PRODUCT', 'Total Quantity', 'UOM', 'Unit Area (SqM)', 'Total Area (SqM)']]
@@ -661,15 +671,17 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
     for k, d in sorted(totals.items(), key=_sort):
         plabel = _fmt_panel(k)
         if "Inner Corner" in plabel:
-            unit_a = round(2 * d['w'] * d['h'] / 1_000_000, 2)
+            unit_a = round(2 * d['w'] * d['h'] / 1_000_000, 3)
+        elif  "Hunch" in plabel or "H" in plabel:
+            unit_a = round(2 * d['w'] * d['h'] / 1_000_000, 3)
         else:
-            unit_a = round(d['w'] * d['h'] / 1_000_000, 2)
-        tot_a  = round(unit_a * d['qty'], 2)
+            unit_a = round(d['w'] * d['h'] / 1_000_000, 3)
+        tot_a  = round(unit_a * d['qty'], 3)
         grand_area += tot_a
         rows.append([plabel, f"{d['qty']:.2f}", "nos",
-                     f"{unit_a:.2f}", f"{tot_a:.2f}"])
+                     f"{unit_a:.3f}", f"{tot_a:.3f}"])
 
-    rows.append(['', '', '', 'Total Area', f"{grand_area:.2f}"])
+    rows.append(['', '', '', 'Total Area', f"{grand_area:.3f}"])
     n = len(rows)
 
     t = Table(rows, colWidths=cw)
@@ -700,12 +712,11 @@ def _boq_summary_section(element_boqs: list, st: dict, num_sets: int = 1) -> lis
 
 
 def generate_boq_pdf(project: ProjectBOQ, output_path: str,
-                     acc_agg: dict = None, boq_number: str = None) -> str:
+                     acc_agg: dict = None, boq_number: str = None, exp_acc_status: bool = False) -> str:
     """
     Generate FORMWORK BOQ PDF matching the updated Nova template.
     Sections: grouped element tables → ACCESSORIES → SUMMARY
     """
-    #print("in pdf gen, project =", project)
     boq_num  = boq_number or f"OP-ID-{abs(hash(project.project_name)) % 10000:04d}"
     date_str = project.date or date.today().strftime("%d/%m/%Y")
     st = _styles()
@@ -738,10 +749,9 @@ def generate_boq_pdf(project: ProjectBOQ, output_path: str,
             pass
 
     groups = _group_boqs(project.element_boqs)
-    #print (" in pdf generator = groups", groups)
     n_sets = max(1, getattr(project, 'num_sets', 1))
     for group in groups:
-        block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc)
+        block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc, acc_status=exp_acc_status)
         story.append(KeepTogether(block[:3]))   # try to keep table together
         story += block[3:]
 

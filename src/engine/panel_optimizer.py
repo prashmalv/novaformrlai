@@ -14,6 +14,9 @@ Complex wall junctions (T / L / C):
   T-shape : 2 extra IC100 at junction per row
   C-shape : 2 extra IC100 at junction per row (enclosed ends use OC)
 """
+
+from collections import Counter
+import re
 import json
 import os
 from typing import Optional
@@ -310,7 +313,6 @@ def optimize_column(element: StructuralElement, panel_height_mm: float) -> Eleme
 
     # Collect all panels
     panel_counts: dict[str, dict] = {}
-
     def _add_panels(combo: list[int], face_count: int, label_prefix=""):
         # face_count = number of identical faces (2 for columns)
         # rows = vertical stacking rows
@@ -384,12 +386,14 @@ def optimize_column(element: StructuralElement, panel_height_mm: float) -> Eleme
 
     return boq
 
-
 def optimize_wall(element: StructuralElement, panel_height_mm: float) -> ElementBOQ:
     """
     Compute formwork BOQ for a straight or junction wall.
 
-    Straight wall : 2 faces × length_mm, OC80 at 4 end corners.
+    Wall has 2 face pairs, same as a column:
+      - 2 faces of length_mm (front/back)
+      - 2 faces of width_mm (sides / thickness ends, where applicable)
+    Straight wall : OC80 at 4 end corners.
     L-junction    : add 1 IC100 per row at the inner corner.
     T-junction    : add 2 IC100 per row at both inner corners.
     C-junction    : add 2 IC100 per row; enclosed end uses OC like a column end.
@@ -401,21 +405,39 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
     rows = 1  # height is for area calculation only; never auto-stack
     boq.height_note = f"{panel_h}MM"
 
-    combo, spacer = find_panel_combination(element.length_mm)
-    if spacer > 0:
-        warnings.append(f"Wall face {element.length_mm}mm: spacer {spacer}mm.")
-    elif spacer < 0:
-        warnings.append(f"Wall face {element.length_mm}mm: overshoot {-spacer}mm.")
+    # --- LENGTH faces (2 faces, each length_mm wide) ---
+    len_combo, len_spacer = find_panel_combination(element.length_mm)
+    if len_spacer > 0:
+        warnings.append(f"Length face {element.length_mm}mm: spacer of {len_spacer}mm needed.")
+    elif len_spacer < 0:
+        warnings.append(f"Length face {element.length_mm}mm: overshoot of {-len_spacer}mm.")
+
+    # --- WIDTH faces (2 faces, each width_mm wide) ---
+    wid_combo, wid_spacer = find_panel_combination(element.width_mm)
+    if wid_spacer > 0:
+        warnings.append(f"Width face {element.width_mm}mm: spacer of {wid_spacer}mm needed.")
+    elif wid_spacer < 0:
+        warnings.append(f"Width face {element.width_mm}mm: overshoot of {-wid_spacer}mm.")
 
     panel_counts: dict[str, dict] = {}
 
-    # Flat panels — 2 main faces
-    counts = _count_panels(combo)
-    for width, cnt in counts.items():
-        key = f"{width}X{panel_h}"
-        total_qty = cnt * 2 * rows
-        panel_counts[key] = {'width': width, 'height': panel_h,
-                              'qty': total_qty, 'is_corner': False}
+    def _add_panels(combo: list[int], face_count: int):
+        # face_count = number of identical faces (2 for length, 2 for width)
+        total_multiplier = face_count * rows
+        counts = _count_panels(combo)
+        for width, cnt in counts.items():
+            key = f"{width}X{panel_h}"
+            total_qty = cnt * total_multiplier
+            if key in panel_counts:
+                panel_counts[key]['qty'] += total_qty
+            else:
+                panel_counts[key] = {
+                    'width': width, 'height': panel_h,
+                    'qty': total_qty, 'is_corner': False
+                }
+
+    _add_panels(len_combo, face_count=2)
+    _add_panels(wid_combo, face_count=2)
 
     # --- OC corners at straight ends ---
     jt = getattr(element, 'junction_type', JunctionType.NONE)
@@ -445,7 +467,7 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
                                  'qty': ic_qty, 'is_corner': True,
                                  'is_inner': True}
 
-    # Build PanelEntry list: IC first, then OC, then flat panels
+    # Build PanelEntry list: IC first, then OC, then flat panels sorted by width desc
     boq.panels = []
     if ic_key in panel_counts:
         d = panel_counts[ic_key]
@@ -469,11 +491,15 @@ def optimize_wall(element: StructuralElement, panel_height_mm: float) -> Element
             size_label=k, width_mm=d['width'], height_mm=d['height'], quantity=d['qty']
         ))
 
-    if spacer > 0:
-        boq.panels.append(_make_filler_entry(spacer, panel_h, face_count=2))
+    # Fill plates ensure: sum(panels) + fill = face_length so the math checks out.
+    if len_spacer > 0:
+        boq.panels.append(_make_filler_entry(len_spacer, panel_h, face_count=2))
+    if wid_spacer > 0:
+        boq.panels.append(_make_filler_entry(wid_spacer, panel_h, face_count=2))
 
-    boq.spacer_mm = max(spacer, 0)
+    boq.spacer_mm = max(len_spacer, wid_spacer, 0)
     boq.warnings = warnings
+
     return boq
 
 
@@ -771,6 +797,7 @@ def optimize_polygon_element(
     oc_count: int,
     ic_count: int,
     product_height_mm: float,
+    hunch_list: list[str] = []
 ) -> 'ElementBOQ':
     """
     Generate BOQ for any polygon-shaped element (L-wall, T-wall, I-beam, etc.)
@@ -821,7 +848,7 @@ def optimize_polygon_element(
         elif face_spacer < 0:
             warnings.append(f"Face {face_i} ({net:.0f}mm): overshoot of {-face_spacer:.0f}mm.")
 
-    # Build PanelEntry list: IC first, then OC, then flat panels sorted width desc
+    # Build PanelEntry list: IC first, then OC,then hunch, then flat panels sorted width desc
     boq.panels = []
     if ic_count > 0 and ic_key in panel_counts:
         d = panel_counts[ic_key]
@@ -835,6 +862,16 @@ def optimize_polygon_element(
             size_label=oc_key, width_mm=_oc(), height_mm=panel_h,
             quantity=d['qty'], is_corner=True,
         ))
+    
+    if len(hunch_list) > 0:
+        hunch_dic = Counter(hunch_list)
+        for hunch,cnt in hunch_dic.items():
+            h_width = int(re.search(r'\d+', hunch).group())
+            boq.panels.append(PanelEntry(
+              size_label=f'{hunch}*{panel_h}', width_mm=h_width, height_mm=panel_h,
+              quantity=cnt,is_corner=True,  
+            ))
+
     flat_keys = sorted(
         [k for k in panel_counts if not panel_counts[k].get('is_corner')],
         key=lambda k: panel_counts[k]['width'], reverse=True,
@@ -853,6 +890,7 @@ def optimize_polygon_element(
     boq.warnings = warnings
 
     boq.height_note = f"{panel_h}MM"
+    boq.hunch_list = list(hunch_list)
     return boq
 
 

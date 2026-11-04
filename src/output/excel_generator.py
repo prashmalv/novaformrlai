@@ -181,6 +181,8 @@ def _accessories_block(ws, row, acc, no_sets, title, highlight_status,
         ('Waller',     acc.total_wallers,     'nos'),
         ('Tie Rod',    acc.total_tierods,     'nos'),
         ('Anchor Nut', acc.total_anchor_nuts, 'nos'),
+        (f'Waller Sizes (mm) :{acc.total_waller_dimensions}',"",""),
+        (f'Waller Sizes (mm) :{acc.total_tierod_dimensions}',"","")
     ]
     data_start = row
     for name, qty, uom in data:
@@ -208,7 +210,7 @@ def _accessories_block(ws, row, acc, no_sets, title, highlight_status,
 # BOQ sheet
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
+def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None, acc_status: bool = False):
     ws  = wb.create_sheet("FORMWORK BOQ")
     row = 1
 
@@ -362,11 +364,13 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
             label     = _fmt_panel(panel.size_label)
             qty       = panel.quantity
             if "Inner Corner" in label:
-                unit_a    = round(2 * panel.width_mm * panel.height_mm / 1_000_000, 2)
+                unit_a    = round(2 * panel.width_mm * panel.height_mm / 1_000_000, 3)
+            elif "Hunch" in label or "H" in label:
+                    unit_a    = round(2 * panel.width_mm * panel.height_mm / 1_000_000, 3)
             else:
-                unit_a    = round(panel.width_mm * panel.height_mm / 1_000_000, 2)
+                unit_a    = round(panel.width_mm * panel.height_mm / 1_000_000, 3)
             total_qty = qty * no_sets
-            row_area  = round(unit_a * total_qty, 2)
+            row_area  = round(unit_a * total_qty, 3)
             total_area += row_area
             is_corner = panel.is_corner or panel.is_inner_corner
             fill = _LIGHT_P if is_corner else (None if (row % 2 == 0) else _SMOKE)
@@ -376,8 +380,8 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
             _cell(ws, row, 4, "nos",      fill=fill)
             _cell(ws, row, 5, no_sets if first else "",  fill=fill, bold=first)
             _cell(ws, row, 6, f"{total_qty:.2f}", fill=fill)
-            _cell(ws, row, 7, f"{unit_a:.2f}",    fill=fill)
-            _cell(ws, row, 8, f"{row_area:.2f}",  fill=fill)
+            _cell(ws, row, 7, f"{unit_a:.3f}",    fill=fill)
+            _cell(ws, row, 8, f"{row_area:.3f}",  fill=fill)
             # Column I left empty — diagram spans this area via merge
             first = False
             row  += 1
@@ -387,7 +391,7 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
         for ci in range(3, 7):
             ws.cell(row=row, column=ci).value = ""
         _cell(ws, row, 7, "Total Area (in SqM)", bold=True, align="right")
-        _cell(ws, row, 8, f"{total_area:.2f}",   bold=True)
+        _cell(ws, row, 8, f"{total_area:.3f}",   bold=True)
 
         block_end_row = row
 
@@ -444,19 +448,20 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
         # Same computation modules as pdf_generator._boq_element_table — the
         # acc object and highlight_status flag are identical, only the table
         # rendering differs (openpyxl cells vs. reportlab Table).
-        if el.is_column:
-            from src.engine.column_accessories import compute_column_accessories
-            acc, highlight_status = compute_column_accessories(
-                el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
-            row = _accessories_block(ws, row, acc, no_sets, 'COLUMN ACCESSORIES', highlight_status)
-            row += 1   # gap after block
+        if acc_status:
+            if el.is_column:
+                from src.engine.column_accessories import compute_column_accessories
+                acc, highlight_status = compute_column_accessories(
+                    el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
+                row = _accessories_block(ws, row, acc, no_sets, 'COLUMN ACCESSORIES', highlight_status)
+                row += 1   # gap after block
 
-        if el.is_wall:
-            from src.engine.sharewall_accessories import compute_sharewall_accessories
-            acc, highlight_status = compute_sharewall_accessories(
-                el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
-            row = _accessories_block(ws, row, acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status)
-            row += 1   # gap after block
+            if el.is_wall:
+                from src.engine.sharewall_accessories import compute_sharewall_accessories
+                acc, highlight_status = compute_sharewall_accessories(
+                    el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
+                row = _accessories_block(ws, row, acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status)
+                row += 1   # gap after block
 
         row += 2   # blank gap after block
 
@@ -517,29 +522,37 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None):
 
     def _sort_key(kv):
         k = kv[0]
-        return (0 if k.startswith('OC') or k.startswith('IC') else 1,
-                -totals[k]['w'])
+        return (
+        0 if k.startswith('IC')
+        else 1 if k.startswith('OC')
+        else 2 if k.startswith('H')
+        else 3,
+        -totals[k]['w'])
+        # return (0 if k.startswith('OC') or k.startswith('IC') else 1,
+        #         -totals[k]['w'])
 
     grand_area = 0.0
     for k, d in sorted(totals.items(), key=_sort_key):
         plabel = _fmt_panel(k)
         if "Inner Corner" in plabel:
-            unit_a = round((2 * d['w'] * d['h']) / 1_000_000, 2)
+            unit_a = round((2 * d['w'] * d['h']) / 1_000_000, 3)
+        elif "Hunch" in plabel or "H" in plabel:
+            unit_a = round((2 * d['w'] * d['h']) / 1_000_000, 3)
         else:
-            unit_a = round(d['w'] * d['h'] / 1_000_000, 2)
-        tot_a  = round(unit_a * d['qty'], 2)
+            unit_a = round(d['w'] * d['h'] / 1_000_000, 3)
+        tot_a  = round(unit_a * d['qty'], 3)
         grand_area += tot_a
         fill = _SMOKE if row % 2 == 0 else None
         _cell(ws, row, 2, plabel,     align="left", fill=fill)
         _cell(ws, row, 3, f"{d['qty']:.2f}", fill=fill)
         _cell(ws, row, 4, "nos",             fill=fill)
-        _cell(ws, row, 5, f"{unit_a:.2f}",   fill=fill)
-        _cell(ws, row, 6, f"{tot_a:.2f}",    fill=fill)
+        _cell(ws, row, 5, f"{unit_a:.3f}",   fill=fill)
+        _cell(ws, row, 6, f"{tot_a:.3f}",    fill=fill)
         row += 1
 
     _cell(ws, row, 2, "", align="right")
     _cell(ws, row, 5, "Total Area", bold=True, align="right")
-    _cell(ws, row, 6, f"{grand_area:.2f}", bold=True)
+    _cell(ws, row, 6, f"{grand_area:.3f}", bold=True)
 
     # Column widths
     for col_letter, width in cw_map.items():
@@ -843,6 +856,7 @@ def generate_excel_boq(
     acc_agg: dict = None,
     boq_number: str = None,
     qtn_number: str = None,
+    acc_status: bool = False
 ) -> str:
     """
     Generate Excel file with three sheets:
@@ -856,7 +870,7 @@ def generate_excel_boq(
     # Attach acc_agg to project temporarily for BOQ sheet
     project._acc_agg = acc_agg or {}
 
-    _write_boq_sheet(wb, project, boq_number=boq_number)
+    _write_boq_sheet(wb, project, boq_number=boq_number, acc_status= acc_status)
     _write_quotation_sheet(wb, project, price_per_sqm=price_per_sqm,
                            freight=freight_amount, gst_rate=gst_rate,
                            qtn_number=qtn_number, acc_agg=acc_agg)

@@ -15,8 +15,9 @@ from PyQt6.QtWidgets import (
     QGroupBox, QScrollArea, QTextEdit, QSplitter,
     QHeaderView, QFrame, QSizePolicy, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QEvent, QTimer
-from PyQt6.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QEvent, QTimer, QRectF, QPointF
+from PyQt6.QtGui import (QFont, QColor, QPalette, QIcon, QPixmap,
+                         QPainter, QPen, QPolygonF)
 
 from src.models.element import (
     StructuralElement, ElementType, JunctionType, ProjectBOQ, ElementBOQ
@@ -130,6 +131,67 @@ GROUP_STYLE = f"""
         left: 12px;
     }}
 """
+
+_CHECKBOX_STYLE_CACHE = None
+
+
+def get_checkbox_style() -> str:
+    """Stylesheet that draws a clear box (unchecked) and a box with a tick (checked).
+
+    The two indicator images are painted once with QPainter and saved to the
+    temp folder, so no external asset files are needed. Must be called after
+    QApplication exists (i.e. while building the UI).
+    """
+    global _CHECKBOX_STYLE_CACHE
+    if _CHECKBOX_STYLE_CACHE:
+        return _CHECKBOX_STYLE_CACHE
+
+    import tempfile
+    size = 20
+    folder = Path(tempfile.gettempdir()) / "nova_ui_icons"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    def _paint(checked: bool) -> Path:
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(1.5, 1.5, size - 3, size - 3)
+        p.setPen(QPen(QColor(NOVA_ACCENT), 2))
+        p.setBrush(QColor(NOVA_ACCENT) if checked else QColor("white"))
+        p.drawRoundedRect(rect, 4, 4)
+        if checked:
+            pen = QPen(QColor("white"), 2.6)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolyline(QPolygonF([QPointF(5.5, 10.5),
+                                      QPointF(9, 14),
+                                      QPointF(14.8, 6.2)]))
+        p.end()
+        path = folder / ("cb_checked.png" if checked else "cb_unchecked.png")
+        pm.save(str(path))
+        return path
+
+    off = _paint(False).as_posix()
+    on = _paint(True).as_posix()
+    _CHECKBOX_STYLE_CACHE = f"""
+        QCheckBox {{
+            spacing: 8px;
+            font-size: 12px;
+            color: {NOVA_BLUE};
+        }}
+        QCheckBox::indicator {{
+            width: {size}px;
+            height: {size}px;
+        }}
+        QCheckBox::indicator:unchecked {{ image: url({off}); }}
+        QCheckBox::indicator:checked   {{ image: url({on}); }}
+        QCheckBox::indicator:unchecked:hover {{ background: {NOVA_LIGHT}; border-radius: 4px; }}
+    """
+    return _CHECKBOX_STYLE_CACHE
+
 
 TABLE_STYLE = f"""
     QTableWidget {{
@@ -325,7 +387,6 @@ def load_catalog_widths():
         # if widths is empty, result stays as `default`
 
     except Exception as ex:
-        #print(f"Unable to load panel catalog: {ex}")
         result = default
 
     finally:
@@ -1474,12 +1535,14 @@ class _DXFWorker(QThread):
                     doc=_doc,
                 )
                 if all_elements:
+                    # print("this is parse nova full")
                     self.finished.emit({
                         'mode': 'nova',
                         'elements': all_elements, 'boqs': all_boqs, 'error': nova_err,
                     })
                     return
                 # No Nova labels found — use standard geometric parser, same doc
+                #print("this is parse dxf full")
                 detected, bboxes, polylines, scale = parse_dxf_full(
                     self._path, self._casting_h, doc=_doc)
                 self.finished.emit({
@@ -1489,6 +1552,7 @@ class _DXFWorker(QThread):
                     'error': None, 'dxf_path': self._path,
                 })
             else:
+                #print("This is parse dwg full")
                 detected, bboxes, polylines, scale, err, dxf_path = parse_dwg_full(
                     self._path, self._casting_h)
                 self.finished.emit({
@@ -1624,23 +1688,26 @@ class _DXFWorker_nova(QThread):
                     })
                     return
                 # No Nova labels found — use standard geometric parser, same doc
-                detected, bboxes, polylines, scale = parse_dxf_full(
-                    self._path, self._casting_h, doc=_doc)
+                # detected, bboxes, polylines, scale = parse_dxf_full(
+                #     self._path, self._casting_h, doc=_doc)
                 self.finished.emit({
                     'mode': 'standard',
-                    'detected': detected, 'bboxes': bboxes,
-                    'polylines': polylines, 'scale': scale,
-                    'error': None, 'dxf_path': self._path,
+                    'detected': [], 'bboxes': [],
+                    'polylines': [], 'scale': 1.0,
+                    'error': '''Either the label or dimension along with label is missing in the uploaded drawing. 
+                    Please make required changes and upload the drawing again.''', 
+                    'dxf_path': self._path,
                 })
             else:
-                detected, bboxes, polylines, scale, err, dxf_path = parse_dwg_full(
-                    self._path, self._casting_h)
                 self.finished.emit({
-                    'mode': 'standard',
-                    'detected': detected, 'bboxes': bboxes,
-                    'polylines': polylines, 'scale': scale,
-                    'error': err, 'dxf_path': dxf_path,
-                })
+                        'mode': 'standard',
+                        'detected': [], 'bboxes': [],
+                        'polylines': [], 'scale': 1.0,
+                        'error': '''Either the label or dimension along with label is missing in the uploaded drawing. 
+                        Please make required changes and upload the drawing again.''', 
+                        'dxf_path': self._path,
+                    })
+               
         except Exception as ex:
             self.finished.emit({
                 'mode': 'standard',
@@ -2060,40 +2127,40 @@ class MainWindow(QMainWindow):
         self.dwg_status_label = QLabel("")
         self._update_dwg_status()
 
-        # PDF Import
-        grp_pdf = QGroupBox("Import from PDF Drawing")
-        grp_pdf.setStyleSheet(GROUP_STYLE)
-        pdf_lay = QVBoxLayout(grp_pdf)
+        # # PDF Import
+        # grp_pdf = QGroupBox("Import from PDF Drawing")
+        # grp_pdf.setStyleSheet(GROUP_STYLE)
+        # pdf_lay = QVBoxLayout(grp_pdf)
 
-        pdf_row = QHBoxLayout()
-        self.pdf_path_edit = QLineEdit()
-        self.pdf_path_edit.setReadOnly(True)
-        self.pdf_path_edit.setPlaceholderText(
-            "No file selected — click Browse to load a PDF structural drawing")
-        pdf_row.addWidget(self.pdf_path_edit)
+        # pdf_row = QHBoxLayout()
+        # self.pdf_path_edit = QLineEdit()
+        # self.pdf_path_edit.setReadOnly(True)
+        # self.pdf_path_edit.setPlaceholderText(
+        #     "No file selected — click Browse to load a PDF structural drawing")
+        # pdf_row.addWidget(self.pdf_path_edit)
 
-        btn_pdf_browse = QPushButton("Browse…")
-        btn_pdf_browse.setStyleSheet(BTN_SECONDARY)
-        btn_pdf_browse.setFixedWidth(90)
-        btn_pdf_browse.clicked.connect(self._browse_pdf)
-        pdf_row.addWidget(btn_pdf_browse)
+        # btn_pdf_browse = QPushButton("Browse…")
+        # btn_pdf_browse.setStyleSheet(BTN_SECONDARY)
+        # btn_pdf_browse.setFixedWidth(90)
+        # btn_pdf_browse.clicked.connect(self._browse_pdf)
+        # pdf_row.addWidget(btn_pdf_browse)
 
-        btn_pdf_import = QPushButton("Import Elements")
-        btn_pdf_import.setStyleSheet(BTN_STYLE)
-        btn_pdf_import.setFixedWidth(130)
-        btn_pdf_import.clicked.connect(self._import_pdf)
-        pdf_row.addWidget(btn_pdf_import)
-        pdf_lay.addLayout(pdf_row)
+        # btn_pdf_import = QPushButton("Import Elements")
+        # btn_pdf_import.setStyleSheet(BTN_STYLE)
+        # btn_pdf_import.setFixedWidth(130)
+        # btn_pdf_import.clicked.connect(self._import_pdf)
+        # pdf_row.addWidget(btn_pdf_import)
+        # pdf_lay.addLayout(pdf_row)
 
-        pdf_note = QLabel(
-            "ℹ  Supports Nova box-culvert PDFs with panel labels "
-            "(BOX CULVERT PLAN / UPPER PIPE PLAN / BOTTOM PIPE PLAN / BOTTOM PANEL PLAN). "
-            "Panel BOQ is extracted automatically — same as DXF import.")
-        pdf_note.setWordWrap(True)
-        pdf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
-        pdf_lay.addWidget(pdf_note)
+        # pdf_note = QLabel(
+        #     "ℹ  Supports Nova box-culvert PDFs with panel labels "
+        #     "(BOX CULVERT PLAN / UPPER PIPE PLAN / BOTTOM PIPE PLAN / BOTTOM PANEL PLAN). "
+        #     "Panel BOQ is extracted automatically — same as DXF import.")
+        # pdf_note.setWordWrap(True)
+        # pdf_note.setStyleSheet("font-size:10px; color:#666; padding:2px 0;")
+        # pdf_lay.addWidget(pdf_note)
 
-        lay.addWidget(grp_pdf)
+        # lay.addWidget(grp_pdf)
 
         # Quick text input
         grp = QGroupBox("Quick Text Input (e.g. '5 columns 300x450 height 3000')")
@@ -2223,6 +2290,7 @@ class MainWindow(QMainWindow):
         self.panel_height_combo.addItems(_PANEL_HEIGHT_OPTIONS)
         self.panel_height_combo.setCurrentText("3705")
         self.panel_height_combo.setEditable(True)
+        self._wire_height_validation(self.panel_height_combo, "Panel Height (mm)")
         self.panel_height_combo.setMinimumWidth(160)
         self.panel_height_combo.editTextChanged.connect(
             lambda _text: setattr(self, '_last_ph_edited', 'config'))
@@ -2234,6 +2302,7 @@ class MainWindow(QMainWindow):
         self.casting_height_combo.addItems(_CASTING_HEIGHT_OPTIONS)
         self.casting_height_combo.setCurrentText("3705")
         self.casting_height_combo.setEditable(True)
+        self._wire_height_validation(self.casting_height_combo, "Casting Height (mm)")
         self.casting_height_combo.setMinimumWidth(160)
         _cast_lbl = QLabel("Casting Height (mm):")
         _cast_lbl.setToolTip(
@@ -2321,6 +2390,7 @@ class MainWindow(QMainWindow):
         self.boq_ph_combo.addItems(_PANEL_HEIGHT_OPTIONS)
         self.boq_ph_combo.setCurrentText("3705")
         self.boq_ph_combo.setEditable(True)
+        self._wire_height_validation(self.boq_ph_combo, "Panel Height (mm)")
         self.boq_ph_combo.setMinimumWidth(90)
         self.boq_ph_combo.editTextChanged.connect(
             lambda _text: setattr(self, '_last_ph_edited', 'boq'))
@@ -2335,6 +2405,7 @@ class MainWindow(QMainWindow):
         self.boq_ch_combo.addItems(_CASTING_HEIGHT_OPTIONS)
         self.boq_ch_combo.setCurrentText("3705")
         self.boq_ch_combo.setEditable(True)
+        self._wire_height_validation(self.boq_ch_combo, "Casting Height (mm)")
         self.boq_ch_combo.setMinimumWidth(90)
         self.boq_ch_combo.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -2527,6 +2598,7 @@ class MainWindow(QMainWindow):
 
         self.gst_check = QCheckBox("Include GST @ 18%")
         self.gst_check.setChecked(True)
+        #self.gst_check.setStyleSheet(get_checkbox_style())
         f_charges.addRow("GST:", self.gst_check)
 
         self.freight_spin = QDoubleSpinBox()
@@ -2542,6 +2614,13 @@ class MainWindow(QMainWindow):
         grp.setStyleSheet(GROUP_STYLE)
         g = QVBoxLayout(grp)
         g.setSpacing(12)
+
+        # Export with Accessories
+        self.exp_acc_checkbox = QCheckBox("Export With Accessories")
+        self.exp_acc_checkbox.setChecked(True)
+        self.exp_acc_checkbox.setStyleSheet(get_checkbox_style())
+        self.exp_acc_checkbox.setToolTip("Include accessories (Waller, Tie rod, etc.) in exported files")
+        g.addWidget(self.exp_acc_checkbox)
 
         btn_boq_pdf = QPushButton("  Export BOQ PDF")
         btn_boq_pdf.setStyleSheet(BTN_STYLE)
@@ -2698,7 +2777,9 @@ class MainWindow(QMainWindow):
         if boq_idx is None or boq_idx >= len(self._boqs):
             return
         eboq = self._boqs[boq_idx]
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
         dlg = EditBOQPanelsDialog(eboq, panel_h, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -2753,12 +2834,16 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+        if self._get_panel_height() is None:
+            return
         self._boqs.pop(boq_idx)
         if boq_idx < len(self._elements):
             self._elements.pop(boq_idx)
         if boq_idx < len(self._acc_boqs):
             self._acc_boqs.pop(boq_idx)
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
         self._project = ProjectBOQ(
             project_name       = self.project_name_edit.text().strip(),
             client_name        = self.client_name_edit.text().strip(),
@@ -2909,7 +2994,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No File", "Please select a PDF file first.")
             return
 
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
 
         progress = QProgressDialog("Reading PDF drawing…", None, 0, 0, self)
         progress.setWindowTitle("PDF Import")
@@ -3039,9 +3126,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No File", "Please select a DXF file first.")
             return
 
-        panel_h    = float(self.panel_height_combo.currentText())
-        casting_h  = float(self.casting_height_combo.currentText()) \
-                     if hasattr(self, 'casting_height_combo') else panel_h
+        panel_h   = self._get_panel_height()
+        casting_h = self._get_casting_height()
+        if panel_h is None or casting_h is None:
+            return
 
         # Progress dialog — accurate timing hint for large drawings
         from PyQt6.QtWidgets import QProgressDialog
@@ -3122,7 +3210,6 @@ class MainWindow(QMainWindow):
                     detected_h = detect_panel_height(dxf_for_detect)
                 except Exception:
                     pass
-
             # ── Import Settings Confirmation ──────────────────────────────────
             try:
                 cur_ph = int(self.panel_height_combo.currentText())
@@ -3338,9 +3425,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No File", "Please select a DXF file first.")
             return
 
-        panel_h    = float(self.panel_height_combo.currentText())
-        casting_h  = float(self.casting_height_combo.currentText()) \
-                     if hasattr(self, 'casting_height_combo') else panel_h
+        panel_h   = self._get_panel_height()
+        casting_h = self._get_casting_height()
+        if panel_h is None or casting_h is None:
+            return
 
         # Progress dialog — accurate timing hint for large drawings
         from PyQt6.QtWidgets import QProgressDialog
@@ -3629,6 +3717,57 @@ class MainWindow(QMainWindow):
         self._dwg_worker.start()
     # ---------------- panel size ---------------------------------
 
+    # ---------------- height validation ---------------------------
+
+    def _wire_height_validation(self, combo, label):
+        """Validate an editable height combo as soon as the user finishes typing."""
+        le = combo.lineEdit()
+        if le is not None:
+            le.editingFinished.connect(
+                lambda c=combo, l=label: self._read_height(c, l))
+
+    def _read_height(self, combo, label):
+        """
+        Returns the combo's value as an int (mm) or None if it is not a valid
+        whole number. On invalid input a message is shown and the combo is
+        reverted to its last valid value so nothing downstream sees bad text.
+        """
+        if not hasattr(self, '_last_valid_heights'):
+            self._last_valid_heights = {}
+        text = combo.currentText().strip()
+        try:
+            val = int(text)
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(
+                self, "Invalid Value",
+                f"{label}: Please enter height in numbers")
+            last = self._last_valid_heights.get(id(combo), 3705)
+            combo.blockSignals(True)
+            bad_idx = combo.findText(text)
+            if bad_idx >= 0:                      # drop junk item Qt may have inserted
+                combo.removeItem(bad_idx)
+            combo.setCurrentText(str(last))
+            combo.blockSignals(False)
+            return None
+        self._last_valid_heights[id(combo)] = val
+        return val
+
+    def _get_panel_height(self):
+        return self._read_height(self.panel_height_combo, "Panel Height (mm)")
+
+    def _get_casting_height(self):
+        if not hasattr(self, 'casting_height_combo'):
+            return self._get_panel_height()
+        return self._read_height(self.casting_height_combo, "Casting Height (mm)")
+
+    def _heights_valid(self):
+        """True only if both Panel Height and Casting Height are whole numbers."""
+        ph = self._get_panel_height()
+        ch = self._get_casting_height()
+        return ph is not None and ch is not None
+
     def _sync_panel_height_before_refresh(self):
         """
         Pulls the latest typed panel-height value into panel_height_combo
@@ -3648,7 +3787,7 @@ class MainWindow(QMainWindow):
         else:
             src, dst = self.panel_height_combo, self.boq_ph_combo
         text = src.currentText().strip()
-        if not text or text == dst.currentText():
+        if not text.isdigit() or text == dst.currentText():
             return
         self._ph_syncing = True
         idx = dst.findText(text)
@@ -3659,6 +3798,8 @@ class MainWindow(QMainWindow):
         self._ph_syncing = False
 
     def _run_optimization(self):
+        if not self._heights_valid():
+            return
         self._sync_panel_height_before_refresh()
         if not self._elements:
             QMessageBox.warning(self, "No Elements",
@@ -3677,7 +3818,9 @@ class MainWindow(QMainWindow):
                 scale=1.0,
             )
             self.tabs.setCurrentIndex(4)
-            panel_h = float(self.panel_height_combo.currentText())
+            panel_h = self._get_panel_height()
+            if panel_h is None:
+                return
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
                  "BOQ_COMPUTED",
@@ -3694,7 +3837,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "BOQ Refreshed", msg)
             return
 
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
         self._boqs = []
 
         for elem in self._elements:
@@ -3771,6 +3916,8 @@ class MainWindow(QMainWindow):
         """
         if not self._elements or not self._boqs:
             return
+        if not self._heights_valid():
+            return
         # Sync boq_ph_combo to match panel_height_combo
         if not self._ph_syncing and hasattr(self, 'boq_ph_combo'):
             self._ph_syncing = True
@@ -3781,7 +3928,9 @@ class MainWindow(QMainWindow):
             else:
                 self.boq_ph_combo.setCurrentText(text)
             self._ph_syncing = False
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
         if not self._is_nova_drawing:
             new_boqs = []
             for elem in self._elements:
@@ -3799,9 +3948,12 @@ class MainWindow(QMainWindow):
                     panel.height_mm = panel_h
                     panel.area_sqm = round((panel.width_mm * panel_h) / 1_000_000, 6)
                     # Relabel: preserve prefix (OC80, IC100, 600, …) and replace height suffix
-                    _m = _re.match(r'^(.+?)X\d+(?:\.\d+)?$', panel.size_label)
+                    #_m = _re.match(r'^(.+?)X\d+(?:\.\d+)?$', panel.size_label)
+                    _m = _re.match(r'^(.+?)([Xx*])\s*\d+(?:\.\d+)?$',panel.size_label)
                     if _m:
-                        panel.size_label = f"{_m.group(1)}X{int(panel_h)}"
+                        # panel.size_label = f"{_m.group(1)}X{int(panel_h)}"
+                        panel.size_label = f"{_m.group(1)}{_m.group(2)}{int(panel_h)}"
+
         self._project = ProjectBOQ(
             project_name      = self.project_name_edit.text().strip(),
             client_name       = self.client_name_edit.text().strip(),
@@ -3831,7 +3983,9 @@ class MainWindow(QMainWindow):
         """Run BOQ computation silently after element import. No dialogs, no tab switch."""
         if not self._elements:
             return
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
         if not nova_mode:
             new_boqs = []
             for elem in self._elements:
@@ -3872,6 +4026,9 @@ class MainWindow(QMainWindow):
             return
         self._ph_syncing = True
         text = self.boq_ph_combo.currentText()
+        if not text.strip().isdigit():
+            self._ph_syncing = False
+            return
         cfg_idx = self.panel_height_combo.findText(text)
         if cfg_idx >= 0:
             self.panel_height_combo.setCurrentIndex(cfg_idx)
@@ -3886,6 +4043,9 @@ class MainWindow(QMainWindow):
             return
         self._ph_syncing = True
         text = self.boq_ch_combo.currentText()
+        if not text.strip().isdigit():
+            self._ph_syncing = False
+            return
         cfg_idx = self.casting_height_combo.findText(text)
         if cfg_idx >= 0:
             self.casting_height_combo.setCurrentIndex(cfg_idx)
@@ -4057,6 +4217,14 @@ class MainWindow(QMainWindow):
                     )
             self.acc_warn_label.setText("\n".join(warnings) if warnings else "")
 
+    def _export_with_accessories(self) -> bool:
+        """True if 'Export With Accessories' is ticked, else False."""
+        return self.exp_acc_checkbox.isChecked()
+
+    def _get_export_acc_agg(self):
+        """Accessory aggregate for exports; None when the checkbox is off."""
+        return self._acc_agg if self._export_with_accessories() else None
+
     def _export_pdf(self):
         if not self._project or not self._boqs:
             QMessageBox.warning(self, "No Data",
@@ -4070,8 +4238,10 @@ class MainWindow(QMainWindow):
 
         try:
             boq_no = self.boq_number_edit.text().strip() or None
+            exp_acc_status = self._export_with_accessories()
+            acc_agg = self._get_export_acc_agg()
             out = generate_boq_pdf(self._project, path,
-                                   acc_agg=self._acc_agg, boq_number=boq_no)
+                                   acc_agg=acc_agg, boq_number=boq_no, exp_acc_status=exp_acc_status)
             self.export_log.append(f"✓ BOQ PDF saved: {out}")
             from src.auth.auth_manager import log_action as _log
             _log(self._user["username"], self._user["full_name"],
@@ -4097,7 +4267,7 @@ class MainWindow(QMainWindow):
             qtn_no = self.qtn_number_edit.text().strip() or None
             out = generate_quotation_pdf(
                 self._project, path,
-                acc_agg=self._acc_agg,
+                acc_agg=self._get_export_acc_agg(),
                 qtn_number=qtn_no,
                 price_per_sqm=self._project.panel_rate_per_sqm,
                 freight=self._project.freight_amount,
@@ -4127,15 +4297,17 @@ class MainWindow(QMainWindow):
         try:
             boq_no = self.boq_number_edit.text().strip() or None
             qtn_no = self.qtn_number_edit.text().strip() or None
+            exp_acc_status = self._export_with_accessories()
             out = generate_excel_boq(
                 self._project,
                 path,
                 price_per_sqm=self._project.panel_rate_per_sqm,
                 freight_amount=self._project.freight_amount,
                 gst_rate=0.18 if self._project.gst_enabled else 0.0,
-                acc_agg=self._acc_agg,
+                acc_agg=self._get_export_acc_agg(),
                 boq_number=boq_no,
                 qtn_number=qtn_no,
+                acc_status=exp_acc_status,
             )
             self.export_log.append(f"✓ Excel saved: {out}")
             from src.auth.auth_manager import log_action as _log
@@ -4164,7 +4336,9 @@ class MainWindow(QMainWindow):
 
         element = self._elements[row]
         boq     = self._boqs[row]
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
 
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
@@ -4271,13 +4445,15 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
 
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
             out = generate_project_layout(
                 self._elements, self._boqs, panel_h,
-                output_path=path, acc_agg=self._acc_agg
+                output_path=path, acc_agg=self._get_export_acc_agg()
             )
             self.unsetCursor()
             self.export_log.append(f"✓ Layout PDF saved: {out}")
@@ -4317,7 +4493,9 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith('.dxf'):
             path += '.dxf'
 
-        panel_h = float(self.panel_height_combo.currentText())
+        panel_h = self._get_panel_height()
+        if panel_h is None:
+            return
 
         # Build ProjectBOQ for title block
         try:
