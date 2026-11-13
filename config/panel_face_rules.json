@@ -1,0 +1,253 @@
+{
+ "_note": "face length (mm) -> Nova's usual flat panels; learned by src/engine/learn_panel_rules.py from past quotations",
+ "rules": {
+  "230": {
+   "panels": [
+    230
+   ],
+   "seen": 5,
+   "others": {},
+   "sources": [
+    "Drawing 5 copy/Quotation 5.xlsx",
+    "Drawing 5/Quotation 5.xlsx",
+    "client-3/QUOTATION.xlsx"
+   ]
+  },
+  "250": {
+   "panels": [
+    250
+   ],
+   "seen": 6,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "300": {
+   "panels": [
+    300
+   ],
+   "seen": 3,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx",
+    "client-3/QUOTATION.xlsx"
+   ]
+  },
+  "350": {
+   "panels": [
+    350
+   ],
+   "seen": 2,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx",
+    "client-3/QUOTATION.xlsx"
+   ]
+  },
+  "400": {
+   "panels": [
+    400
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "450": {
+   "panels": [
+    250,
+    200
+   ],
+   "seen": 3,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-1 QUOTATION.xlsx",
+    "Client Samples/CLIENT-3 QUOTATION.xlsx",
+    "wall/WALL BOQ & QUOTATION.xlsx"
+   ]
+  },
+  "600": {
+   "panels": [
+    600
+   ],
+   "seen": 8,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-1 QUOTATION.xlsx",
+    "Client Samples/CLIENT-3 QUOTATION.xlsx",
+    "Drawing 5 copy/Quotation 5.xlsx",
+    "Drawing 5/Quotation 5.xlsx",
+    "client-3/QUOTATION.xlsx"
+   ]
+  },
+  "650": {
+   "panels": [
+    400,
+    250
+   ],
+   "seen": 2,
+   "others": {},
+   "sources": [
+    "client-3/QUOTATION.xlsx"
+   ]
+  },
+  "875": {
+   "panels": [
+    400,
+    350,
+    125
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "900": {
+   "panels": [
+    600,
+    300
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-1 QUOTATION.xlsx"
+   ]
+  },
+  "960": {
+   "panels": [
+    500,
+    230,
+    230
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-1 QUOTATION.xlsx"
+   ]
+  },
+  "1000": {
+   "panels": [
+    500,
+    500
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-1 QUOTATION.xlsx"
+   ]
+  },
+  "1575": {
+   "panels": [
+    600,
+    600,
+    250,
+    125
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "1675": {
+   "panels": [
+    600,
+    600,
+    350,
+    125
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "2050": {
+   "panels": [
+    600,
+    600,
+    600,
+    250
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "2280": {
+   "panels": [
+    600,
+    600,
+    600,
+    250,
+    230
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "2400": {
+   "panels": [
+    600,
+    600,
+    600,
+    600
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "2550": {
+   "panels": [
+    600,
+    600,
+    600,
+    500,
+    250
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "3200": {
+   "panels": [
+    600,
+    600,
+    600,
+    600,
+    600,
+    200
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  },
+  "3600": {
+   "panels": [
+    600,
+    600,
+    600,
+    600,
+    600,
+    600
+   ],
+   "seen": 1,
+   "others": {},
+   "sources": [
+    "Client Samples/CLIENT-3 QUOTATION.xlsx"
+   ]
+  }
+ }
+}

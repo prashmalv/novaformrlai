@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QPushButton,
     QLabel, QLineEdit, QComboBox, QFormLayout, QGroupBox,
-    QMessageBox, QFrame, QSizePolicy, QFileDialog, QTextEdit
+    QMessageBox, QFrame, QSizePolicy, QFileDialog, QTextEdit, QCheckBox
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor, QFontDatabase
@@ -127,6 +127,7 @@ class AdminPanelDialog(QDialog):
         tabs.addTab(self._build_daily_logs_tab(),  "📁  Daily Log Files")
         tabs.addTab(self._build_network_tab(),     "🔗  Database Settings")
         tabs.addTab(self._build_catalog_tab(),     "📦  Panel Catalog")
+        tabs.addTab(self._build_ai_tab(),          "🤖  AI Settings")
         root.addWidget(tabs)
 
     # ── Tab 1: Team Members ───────────────────────────────────────────────────
@@ -972,6 +973,138 @@ class AdminPanelDialog(QDialog):
         self._save_db_path()
 
     # ── Tab 5: Panel Catalog ──────────────────────────────────────────────────
+
+    # ── Tab: AI Settings ───────────────────────────────────────────────────────
+
+    def _build_ai_tab(self) -> QWidget:
+        from src.ai import settings as ai_settings
+        s = ai_settings.load()
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(14)
+
+        grp = QGroupBox("AI Assistant (BOQ chat)")
+        grp.setStyleSheet(f"""
+            QGroupBox {{ font-weight:700; color:{_NOVA_BLUE};
+                         border:1.5px solid {_LIGHT}; border-radius:8px;
+                         margin-top:8px; padding:14px 16px; }}
+            QGroupBox::title {{ subcontrol-origin:margin; left:10px; }}
+        """)
+        f = QFormLayout(grp)
+        f.setSpacing(10)
+
+        self._ai_enabled = QCheckBox("Use the AI model for the AI Assistant tab")
+        self._ai_enabled.setChecked(bool(s["enabled"]))
+        f.addRow("", self._ai_enabled)
+
+        self._ai_model = QComboBox()
+        for mid, label in ai_settings.CHAT_MODELS:
+            self._ai_model.addItem(label, mid)
+        i = self._ai_model.findData(s["chat_model"])
+        self._ai_model.setCurrentIndex(max(i, 0))
+        f.addRow("Model:", self._ai_model)
+
+        def secret(value, placeholder):
+            e = QLineEdit(value)
+            e.setPlaceholderText(placeholder)
+            e.setEchoMode(QLineEdit.EchoMode.Password)
+            return e
+        self._ai_az_ep = QLineEdit(s["azure_endpoint"])
+        self._ai_az_ep.setPlaceholderText("https://<resource>.openai.azure.com")
+        f.addRow("Azure endpoint:", self._ai_az_ep)
+        self._ai_az_key = secret(s["azure_api_key"], "Azure OpenAI key")
+        f.addRow("Azure key:", self._ai_az_key)
+        self._ai_an_key = secret(s["anthropic_api_key"], "sk-ant-...  (only for Claude models)")
+        f.addRow("Anthropic key:", self._ai_an_key)
+
+        note = QLabel(
+            "Keys are stored only on this computer (config/api_config.json). "
+            "When AI is on, the user's question and the open project's BOQ (labels, sizes, "
+            "panels, accessories, amounts) are sent to the chosen model. Users can tick "
+            "<b>AI off for this project</b> in the AI Assistant tab for government / "
+            "confidential projects. Every AI question is logged with its cost in "
+            "data/ai_chat_log.jsonl. GPT-5.4 mini costs well under ₹1 per question.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{_HINT}; font-size:9pt; font-weight:normal;")
+        f.addRow(note)
+
+        row = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        save_btn.setStyleSheet(_BTN)
+        save_btn.setFixedWidth(110)
+        save_btn.clicked.connect(self._save_ai_settings)
+        row.addWidget(save_btn)
+        test_btn = QPushButton("Test Connection")
+        test_btn.setStyleSheet(_BTN)
+        test_btn.setFixedWidth(140)
+        test_btn.clicked.connect(self._test_ai_settings)
+        row.addWidget(test_btn)
+        row.addStretch()
+        f.addRow(row)
+
+        self._ai_msg = QLabel("")
+        self._ai_msg.setWordWrap(True)
+        self._ai_msg.setStyleSheet("font-size:9pt;")
+        f.addRow(self._ai_msg)
+
+        lay.addWidget(grp)
+        lay.addStretch()
+        return w
+
+    def _ai_form(self) -> dict:
+        return {
+            "enabled": self._ai_enabled.isChecked(),
+            "chat_model": self._ai_model.currentData(),
+            "azure_endpoint": self._ai_az_ep.text().strip().rstrip("/"),
+            "azure_api_key": self._ai_az_key.text().strip(),
+            "anthropic_api_key": self._ai_an_key.text().strip(),
+        }
+
+    def _save_ai_settings(self):
+        from src.ai import settings as ai_settings
+        s = self._ai_form()
+        missing = ai_settings.missing_credentials(s)
+        if s["enabled"] and missing:
+            self._ai_msg.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+            self._ai_msg.setText(f"Not saved: {missing} for the chosen model.")
+            return
+        try:
+            ai_settings.save(s)
+        except OSError as e:
+            self._ai_msg.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+            self._ai_msg.setText(f"Could not save: {e}")
+            return
+        log_action(self._user["username"], self._user["full_name"], "AI_SETTINGS_CHANGED",
+                   f"AI {'on' if s['enabled'] else 'off'}, model {s['chat_model']}")
+        self._ai_msg.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+        self._ai_msg.setText("Saved. The AI Assistant tab uses it from the next question.")
+
+    def _test_ai_settings(self):
+        from src.ai import settings as ai_settings
+        from src.ai.llm import chat_text, LLMError
+        from PyQt6.QtWidgets import QApplication
+        s = self._ai_form()
+        missing = ai_settings.missing_credentials(s)
+        if missing:
+            self._ai_msg.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+            self._ai_msg.setText(missing)
+            return
+        self._ai_msg.setStyleSheet(f"color:{_HINT}; font-size:9pt;")
+        self._ai_msg.setText("Testing…")
+        QApplication.processEvents()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            text, usage = chat_text(s["chat_model"], "Reply with the single word OK.",
+                                    [{"role": "user", "content": "ping"}], s, max_tokens=200)
+            self._ai_msg.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
+            self._ai_msg.setText(f"✓ Connected to {s['chat_model']} "
+                                 f"({usage.seconds:.1f}s). Reply: {text.strip()[:40]}")
+        except LLMError as e:
+            self._ai_msg.setStyleSheet(f"color:{_RED}; font-size:9pt;")
+            self._ai_msg.setText(f"✗ {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def _build_catalog_tab(self) -> QWidget:
         from src.engine import panel_catalog as _pc

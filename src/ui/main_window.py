@@ -52,6 +52,7 @@ from src.output.layout_drawing import (
 )
 from src.ui.drawing_viewer import DXFViewerWidget
 from src.ui.ai_assistant import AIAssistantWidget
+from src.ui.ai_host import AIHostMixin
 from src.ui.view_3d import Elements3DWidget
 from src.output.dxf_generator import generate_formwork_dxf
 
@@ -1738,7 +1739,7 @@ class _PDFWorker(QThread):
 
 # ---------- Main Window ----------
 
-class MainWindow(QMainWindow):
+class MainWindow(AIHostMixin, QMainWindow):
     logout_requested = pyqtSignal()
 
     def __init__(self, current_user: dict | None = None):
@@ -1834,8 +1835,11 @@ class MainWindow(QMainWindow):
         # Configuration tab removed — height selection lives in BOQ Results tab.
         # Still create the widget so panel_height_combo / casting_height_combo exist.
         self._cfg_widget = self._tab_config()
-        # AI Assistant widget created but NOT added to tabs (hidden until ready)
+        # AI Assistant: cloud LLM when enabled in Admin Panel → AI Settings,
+        # offline keyword engine otherwise. Kept last so tab indices above
+        # (used by _on_tab_changed) don't move.
         self._ai_widget = self._tab_ai_assistant()
+        self.tabs.addTab(self._ai_widget, "  AI Assistant  ")
 
         # Lazy rendering: Drawing Preview (2) and 3D View (3) render only on demand
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -2525,9 +2529,11 @@ class MainWindow(QMainWindow):
         lay.setSpacing(0)
 
         info = QLabel(
-            "  Ask questions about your current BOQ in plain English. "
-            "Works 100% offline — no internet required.  "
+            "  Ask questions about the current BOQ in English or Hinglish. "
+            "With AI on, the question and this project's BOQ are sent to the AI model "
+            "set in Admin Panel; tick 'AI off' for government / confidential projects.  "
         )
+        info.setWordWrap(True)
         info.setStyleSheet(
             f"background:{NOVA_LIGHT}; color:{NOVA_BLUE}; "
             f"border-radius:0; padding:5px 10px; font-size:10px;"
@@ -2535,6 +2541,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(info)
 
         self.ai_widget = AIAssistantWidget()
+        self.ai_widget.host = self
         lay.addWidget(self.ai_widget, stretch=1)
         return w
 
@@ -3889,7 +3896,8 @@ class MainWindow(QMainWindow):
         # Feed latest data into AI assistant
         self.ai_widget.update_data(
             self._elements, self._boqs,
-            self._agg, self._acc_agg, self._project
+            self._agg, self._acc_agg, self._project,
+            acc_boqs=self._acc_boqs,
         )
 
         # Refresh 3D view with latest elements
@@ -3977,7 +3985,8 @@ class MainWindow(QMainWindow):
         self._refresh_boq_tables()
         self.ai_widget.update_data(
             self._elements, self._boqs,
-            self._agg, self._acc_agg, self._project)
+            self._agg, self._acc_agg, self._project,
+            acc_boqs=self._acc_boqs)
 
     def _auto_run_boq_silent(self, nova_mode: bool = False):
         """Run BOQ computation silently after element import. No dialogs, no tab switch."""
@@ -4018,7 +4027,8 @@ class MainWindow(QMainWindow):
         self._refresh_boq_tables()
         self.ai_widget.update_data(
             self._elements, self._boqs,
-            self._agg, self._acc_agg, self._project)
+            self._agg, self._acc_agg, self._project,
+            acc_boqs=self._acc_boqs)
 
     def _boq_ph_changed(self, idx: int):
         """Sync BOQ tab panel height → Configuration tab; triggers BOQ recompute."""

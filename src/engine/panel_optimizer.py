@@ -91,10 +91,28 @@ def _combo_score(combo: list[int]) -> tuple:
     return (len(combo), -max(combo))
 
 
+_RULES_PATH = os.path.join(os.path.dirname(__file__), '../../config/panel_face_rules.json')
+_face_rules_cache: Optional[dict] = None
+
+
+def _face_rules() -> dict:
+    """face length (mm) → Nova's usual panels, learned from past quotations
+    by src/engine/learn_panel_rules.py. Empty if the file is missing."""
+    global _face_rules_cache
+    if _face_rules_cache is None:
+        try:
+            with open(_RULES_PATH) as f:
+                _face_rules_cache = {int(k): v["panels"] for k, v in json.load(f)["rules"].items()}
+        except (OSError, ValueError, KeyError):
+            _face_rules_cache = {}
+    return _face_rules_cache
+
+
 def find_panel_combination(
     target_mm: float,
     available_widths: list[int] = None,
     max_panels: int = None,
+    use_rules: bool = True,
 ) -> tuple[list[int], float]:
     """
     Find the best panel-width combination for a given face net length.
@@ -115,6 +133,12 @@ def find_panel_combination(
 
     widths = sorted(available_widths, reverse=True)
     target = int(round(target_mm))
+
+    # A face length Nova has quoted before → use Nova's own choice, as long
+    # as every panel in it is in the active catalog.
+    learned = _face_rules().get(target) if use_rules else None
+    if learned and set(learned) <= set(widths):
+        return sorted(learned, reverse=True), float(target - sum(learned))
 
     # Face shorter than minimum panel → pure gap, no panels needed
     if target <= 0:

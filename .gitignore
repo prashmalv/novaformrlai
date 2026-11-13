@@ -32,3 +32,7 @@ readme.md
 .sonar/
 sonar-project.properties
 test.py
+# AI drawing-reader outputs (src/ai)
+ai_out/
+data/ai_runs.jsonl
+data/ai_chat_log.jsonl
