@@ -16,8 +16,9 @@ except ImportError:
 
 
 # Label pattern for structural elements: SW6, C1, W2, etc.
-# _SW_LABEL_RE = re.compile(r'^[A-Za-z]{1,3}\d+[A-Za-z]?$')
-_SW_LABEL_RE = re.compile(r'^(?!H-?\d)[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
+# _SW_LABEL_RE = re.compile(r'^(?!H-?\d)[A-Za-z]{1,3}-?\d+[A-Za-z]?$')
+_SW_LABEL_RE = re.compile(r'^(?![Hh0-9])[A-Za-z]')
+
 _SW_LABEL_RE_COMMA = re.compile(r'^(?:[A-Z])\d+[A-Z]?(?:,(?:[A-Z])\d+[A-Z]?)*$')
 
 # _COLUMN_PREFIX = re.compile(r'^C\d', re.I)
@@ -28,7 +29,7 @@ def _elem_type(label: str) -> 'ElementType':
         return ElementType.COLUMN if _COLUMN_PREFIX.match(label) else ElementType.SHEAR_WALL
 
 
-def _classify_polygon_corners(pts: list,threshold: float = 199,) -> list:
+def _classify_polygon_corners(pts: list,threshold: float = 200,) -> list:
     """
     Classify polygon vertices as OC80, IC100, or Hunch.
 
@@ -511,7 +512,6 @@ def parse_nova_shear_walls(
             continue
         if _in_schedule_table(lx,ly):
             continue
-        #print("Label occurrnec :", lbl_up)
         label_occurrences.append({
             'x': lx,
             'y': ly,

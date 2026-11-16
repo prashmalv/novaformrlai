@@ -308,6 +308,7 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None, acc_status
 
     # ── Per-dimension element blocks ──────────────────────────────────────────
     groups = _group_boqs(project.element_boqs)
+    p_height = project.panel_height_mm
     col_hdrs = ['PRODUCT', 'Qty', 'UOM', 'No of Set', 'Total Qty',
                 'Unit Area\n(SqM)', 'Total Area\n(SqM)', 'Floor Plan']
     # Columns B-H = data (7 cols), I = diagram
@@ -318,7 +319,7 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None, acc_status
         boq      = g['boq']
         el       = boq.element
         no_sets  = max(1, el.quantity) * n_sets_proj
-        h_str    = f"{int(g['height_mm'])}MM"
+        h_str    = f"{int(p_height)}MM"
         dim_str  = f"{int(el.length_mm)}X{int(el.width_mm)}"
         req_type = el.element_type.value.lower()
 
@@ -452,14 +453,14 @@ def _write_boq_sheet(wb, project: ProjectBOQ, boq_number: str = None, acc_status
             if el.is_column:
                 from src.engine.column_accessories import compute_column_accessories
                 acc, highlight_status = compute_column_accessories(
-                    el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
+                    el.length_mm, el.width_mm, p_height, el.label, el.polygon_pts)
                 row = _accessories_block(ws, row, acc, no_sets, 'COLUMN ACCESSORIES', highlight_status)
                 row += 1   # gap after block
 
             if el.is_wall:
                 from src.engine.sharewall_accessories import compute_sharewall_accessories
                 acc, highlight_status = compute_sharewall_accessories(
-                    el.length_mm, el.width_mm, g['height_mm'], el.label, el.polygon_pts)
+                    el.length_mm, el.width_mm, p_height, el.label, el.polygon_pts)
                 row = _accessories_block(ws, row, acc, no_sets, 'SHEARWALL ACCESSORIES', highlight_status)
                 row += 1   # gap after block
 

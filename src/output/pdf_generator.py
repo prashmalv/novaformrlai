@@ -243,7 +243,7 @@ def _make_diagram_image(boq: ElementBOQ, width_mm: float = 52, height_mm: float 
         return None
 
 import traceback
-def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:bool = False) -> list:
+def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:bool = False,p_height: float = 3705) -> list:
     """
     Build the per-element-group BOQ table matching the new template exactly.
     Columns: PRODUCT | Qty | UOM | No of Set | Total Qty | Unit Area (SqM) | Total Area (SqM)
@@ -251,7 +251,8 @@ def _boq_element_table(group: dict, num_sets: int = 1, dxf_doc=None, acc_status:
     """
     boq       = group['boq']
     el        = boq.element
-    height_mm = group['height_mm']
+    # height_mm = group['height_mm']
+    height_mm = p_height
     no_sets   = max(1, el.quantity) * max(1, num_sets)
 
     req_type = el.element_type.value.lower()
@@ -749,9 +750,10 @@ def generate_boq_pdf(project: ProjectBOQ, output_path: str,
             pass
 
     groups = _group_boqs(project.element_boqs)
+    p_height = project.panel_height_mm
     n_sets = max(1, getattr(project, 'num_sets', 1))
     for group in groups:
-        block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc, acc_status=exp_acc_status)
+        block = _boq_element_table(group, num_sets=n_sets, dxf_doc=_dxf_doc, acc_status=exp_acc_status, p_height=p_height)
         story.append(KeepTogether(block[:3]))   # try to keep table together
         story += block[3:]
 
