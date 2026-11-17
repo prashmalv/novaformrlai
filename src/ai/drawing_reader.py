@@ -175,7 +175,7 @@ def _count_marks(model, settings, img, tiles, usage: Usage) -> dict:
 
 def read_drawing(path: str, settings: dict, progress=None) -> ReadResult:
     """Blocking - run off the UI thread. Raises LLMError."""
-    model = settings["chat_model"]
+    model = settings.get("drawing_model") or settings["chat_model"]
     pages = _page_images(path)
     if not pages:
         raise LLMError("No pages found in the file")

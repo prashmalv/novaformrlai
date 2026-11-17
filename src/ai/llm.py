@@ -24,6 +24,16 @@ PRICES = {
 }
 
 
+def azure_base(endpoint) -> str:
+    """Resource URL without a trailing /openai/v1 (users often paste the full
+    v1 link from the portal; the clients add /openai/v1/ themselves)."""
+    e = (endpoint or "").strip().rstrip("/")
+    for tail in ("/openai/v1", "/openai"):
+        if e.lower().endswith(tail):
+            e = e[: -len(tail)]
+    return e
+
+
 @dataclass
 class Usage:
     input_tokens: int = 0
@@ -132,7 +142,7 @@ class AzureOpenAIVision(VisionLLM):
     def __init__(self, deployment: str, effort: str = "high"):
         import openai
         self._openai = openai
-        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+        endpoint = azure_base(os.environ.get("AZURE_OPENAI_ENDPOINT", ""))
         key = os.environ.get("AZURE_OPENAI_API_KEY")
         if not endpoint or not key:
             raise LLMError("AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY are not set")
@@ -200,7 +210,7 @@ def chat_text(model: str, system: str, messages: list, creds: dict,
     t0 = time.time()
     if model.startswith("azure:"):
         import openai as o
-        endpoint = (creds.get("azure_endpoint") or "").rstrip("/")
+        endpoint = azure_base(creds.get("azure_endpoint"))
         client = o.OpenAI(base_url=f"{endpoint}/openai/v1/", api_key=creds.get("azure_api_key"),
                           max_retries=2, timeout=90)
         try:
@@ -276,7 +286,7 @@ def chat_structured(model: str, system: str, messages: list, schema, creds: dict
             if isinstance(c, str):
                 return c
             return [{"type": "text", "text": v} if k == "text" else _image_block("azure", v) for k, v in c]
-        endpoint = (creds.get("azure_endpoint") or "").rstrip("/")
+        endpoint = azure_base(creds.get("azure_endpoint"))
         client = o.OpenAI(base_url=f"{endpoint}/openai/v1/", api_key=creds.get("azure_api_key"),
                           max_retries=2, timeout=300)
         try:

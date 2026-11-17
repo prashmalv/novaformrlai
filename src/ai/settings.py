@@ -20,9 +20,21 @@ CHAT_MODELS = [
     ("claude-opus-5-5",    "Claude Opus 5.5 — expensive, needs Anthropic key"),
 ]
 
+# Models for reading PDF / image drawings (best first). Counting columns on a
+# dense plan needs the stronger model: on the Law College test GPT-5.5 matched
+# the manual count exactly (C1 21, C4 28) where mini was off by one, at about
+# $0.60 per page instead of $0.09.
+DRAWING_MODELS = [
+    ("azure:gpt-5-5",      "GPT-5.5 (Azure) — recommended, most accurate (~₹50 per page)"),
+    ("azure:gpt-5-4-mini", "GPT-5.4 mini (Azure) — cheaper, counts can be off by a few"),
+    ("claude-opus-5-5",    "Claude Opus 5.5 — needs Anthropic key"),
+    ("claude-sonnet-5-5",  "Claude Sonnet 5.5 — needs Anthropic key"),
+]
+
 DEFAULTS = {
     "enabled": False,
     "chat_model": "azure:gpt-5-4-mini",
+    "drawing_model": "azure:gpt-5-5",
     "azure_endpoint": "",
     "azure_api_key": "",
     "anthropic_api_key": "",
@@ -54,8 +66,15 @@ def save(settings: dict):
 
 
 def missing_credentials(s: dict) -> str:
-    """Empty string if the chosen model can be called, else what is missing."""
-    m = s.get("chat_model", "")
+    """Empty string if both chosen models can be called, else what is missing."""
+    for key in ("chat_model", "drawing_model"):
+        why = _missing_for(s.get(key, ""), s)
+        if why:
+            return why
+    return ""
+
+
+def _missing_for(m: str, s: dict) -> str:
     if m.startswith("azure:"):
         if not s.get("azure_endpoint") or not s.get("azure_api_key"):
             return "Azure endpoint / key not set"

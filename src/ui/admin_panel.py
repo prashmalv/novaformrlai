@@ -1003,7 +1003,14 @@ class AdminPanelDialog(QDialog):
             self._ai_model.addItem(label, mid)
         i = self._ai_model.findData(s["chat_model"])
         self._ai_model.setCurrentIndex(max(i, 0))
-        f.addRow("Model:", self._ai_model)
+        f.addRow("Chat model:", self._ai_model)
+
+        self._ai_draw_model = QComboBox()
+        for mid, label in ai_settings.DRAWING_MODELS:
+            self._ai_draw_model.addItem(label, mid)
+        i = self._ai_draw_model.findData(s["drawing_model"])
+        self._ai_draw_model.setCurrentIndex(max(i, 0))
+        f.addRow("Drawing reader model:", self._ai_draw_model)
 
         def secret(value, placeholder):
             e = QLineEdit(value)
@@ -1024,7 +1031,8 @@ class AdminPanelDialog(QDialog):
             "panels, accessories, amounts) are sent to the chosen model. Users can tick "
             "<b>AI off for this project</b> in the AI Assistant tab for government / "
             "confidential projects. Every AI question is logged with its cost in "
-            "data/ai_chat_log.jsonl. GPT-5.4 mini costs well under ₹1 per question.")
+            "data/ai_chat_log.jsonl. GPT-5.4 mini costs well under ₹1 per question; "
+            "reading a drawing page with GPT-5.5 costs about ₹50.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{_HINT}; font-size:9pt; font-weight:normal;")
         f.addRow(note)
@@ -1053,10 +1061,12 @@ class AdminPanelDialog(QDialog):
         return w
 
     def _ai_form(self) -> dict:
+        from src.ai.llm import azure_base
         return {
             "enabled": self._ai_enabled.isChecked(),
             "chat_model": self._ai_model.currentData(),
-            "azure_endpoint": self._ai_az_ep.text().strip().rstrip("/"),
+            "drawing_model": self._ai_draw_model.currentData(),
+            "azure_endpoint": azure_base(self._ai_az_ep.text()),
             "azure_api_key": self._ai_az_key.text().strip(),
             "anthropic_api_key": self._ai_an_key.text().strip(),
         }
@@ -1076,7 +1086,7 @@ class AdminPanelDialog(QDialog):
             self._ai_msg.setText(f"Could not save: {e}")
             return
         log_action(self._user["username"], self._user["full_name"], "AI_SETTINGS_CHANGED",
-                   f"AI {'on' if s['enabled'] else 'off'}, model {s['chat_model']}")
+                   f"AI {'on' if s['enabled'] else 'off'}, chat {s['chat_model']}, drawings {s['drawing_model']}")
         self._ai_msg.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
         self._ai_msg.setText("Saved. The AI Assistant tab uses it from the next question.")
 
@@ -1095,11 +1105,16 @@ class AdminPanelDialog(QDialog):
         QApplication.processEvents()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            text, usage = chat_text(s["chat_model"], "Reply with the single word OK.",
-                                    [{"role": "user", "content": "ping"}], s, max_tokens=200)
+            done = []
+            for m in dict.fromkeys((s["chat_model"], s["drawing_model"])):
+                try:
+                    _, usage = chat_text(m, "Reply with the single word OK.",
+                                         [{"role": "user", "content": "ping"}], s, max_tokens=200)
+                except LLMError as e:
+                    raise LLMError(f"{m}: {e}") from e
+                done.append(f"{m} ({usage.seconds:.1f}s)")
             self._ai_msg.setStyleSheet(f"color:{_GREEN}; font-size:9pt;")
-            self._ai_msg.setText(f"✓ Connected to {s['chat_model']} "
-                                 f"({usage.seconds:.1f}s). Reply: {text.strip()[:40]}")
+            self._ai_msg.setText("✓ Connected: " + ", ".join(done))
         except LLMError as e:
             self._ai_msg.setStyleSheet(f"color:{_RED}; font-size:9pt;")
             self._ai_msg.setText(f"✗ {e}")

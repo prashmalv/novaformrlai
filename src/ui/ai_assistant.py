@@ -909,7 +909,7 @@ class AIAssistantWidget(QWidget):
                                     "then say 'Excel bana do' or 'Quotation PDF generate karo'.")
         self._chat.history += [{"role": "user", "content": f"[uploaded drawing {name}]"},
                                {"role": "assistant", "content": "\n".join(lines)}]
-        _ai_log(s["chat_model"], f"[upload] {name}", "\n".join(lines), res.usage, self._project_name or "")
+        _ai_log(s.get("drawing_model") or s["chat_model"], f"[upload] {name}", "\n".join(lines), res.usage, self._project_name or "")
         self._refresh_preview()
 
     def _run(self, fn, on_done, busy_text: str):
